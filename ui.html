@@ -1,0 +1,501 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>그래프 만들기</title>
+<style>
+  :root{--bg:#f6f7f9;--fg:#1d1f23;--muted:#6b7280;--line:#dde1e6;--card:#fff;--acc:#2563eb;--acc2:#e8efff;--ok:#166534;--okb:#dcfce7;--warn:#8a5a00;--warnb:#fff4d6;--paper:#ffffff;--chip:#eef0f3}
+  @media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#121314;--fg:#e8e8e6;--muted:#a3a3a0;--line:#2e3033;--card:#1b1c1e;--acc:#5b8def;--acc2:#1f2a44;--ok:#4ade80;--okb:#143322;--warn:#fbbf24;--warnb:#3a2f12;--chip:#2a2c2f}}
+  :root[data-theme="dark"]{--bg:#121314;--fg:#e8e8e6;--muted:#a3a3a0;--line:#2e3033;--card:#1b1c1e;--acc:#5b8def;--acc2:#1f2a44;--ok:#4ade80;--okb:#143322;--warn:#fbbf24;--warnb:#3a2f12;--chip:#2a2c2f}
+  *{box-sizing:border-box}
+  body{font:14.5px/1.6 -apple-system,"Pretendard","Apple SD Gothic Neo","Malgun Gothic",system-ui,sans-serif;background:var(--bg);color:var(--fg);margin:0}
+  .wrap{max-width:1360px;margin:0 auto;padding:18px 16px}
+  header{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+  h1{font-size:20px;margin:0}h1 small{font-weight:400;color:var(--muted);font-size:13px;margin-left:6px}
+  .priv{font-size:12px;color:var(--ok);background:var(--okb);border-radius:99px;padding:2px 10px}
+  .tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin:12px 0 14px}
+  .tabs button{border:none;border-bottom:2px solid transparent;border-radius:0;background:none;padding:8px 14px;cursor:pointer;color:var(--muted);font:inherit;font-weight:600}
+  .tabs button.on{color:var(--fg);border-bottom-color:var(--acc)}
+  .panel{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:14px}
+  .panel h3{margin:0 0 10px;font-size:15px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .panel h3 .n{display:inline-grid;place-items:center;width:22px;height:22px;border-radius:50%;background:var(--acc);color:#fff;font-size:12.5px}
+  input,select,textarea,button{font:inherit;font-size:14px;padding:6px 9px;border:1px solid var(--line);border-radius:7px;background:var(--card);color:var(--fg)}
+  textarea{width:100%;min-height:150px;resize:vertical;font-family:ui-monospace,"D2Coding",Consolas,monospace;font-size:13px;line-height:1.5;tab-size:12}
+  button{cursor:pointer}button:hover{border-color:#9aa3af}button:disabled{opacity:.5;cursor:default}
+  button.primary{background:var(--acc);color:#fff;border-color:var(--acc);font-weight:600;padding:8px 18px}
+  button.sm{font-size:12.5px;padding:3px 9px}
+  .bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0}
+  .hint{font-size:12.5px;color:var(--muted)}
+  .notes{font-size:12.5px;margin:6px 0}.notes span{display:inline-block;background:var(--warnb);color:var(--warn);border-radius:6px;padding:2px 8px;margin:2px 4px 2px 0}
+  .tblwrap{overflow:auto;max-height:360px;border:1px solid var(--line);border-radius:8px}
+  table.prev{border-collapse:collapse;font-size:13px;min-width:100%}
+  table.prev th,table.prev td{border-bottom:1px solid var(--line);padding:4px 8px;white-space:nowrap;text-align:left}
+  table.prev td.num{text-align:right;font-variant-numeric:tabular-nums}
+  table.prev thead th{position:sticky;top:0;background:var(--card);vertical-align:top;z-index:1}
+  .colhead{display:flex;flex-direction:column;gap:3px;min-width:120px}
+  .colhead input{font-size:13px;padding:3px 6px}.colhead select{font-size:12px;padding:2px 4px}
+  .colhead .r{display:flex;gap:3px}.colhead .r input{width:62px}
+  .t-num{color:#2a78d6}.t-date{color:#1baf7a}.t-cat{color:#9a6700}
+  .gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:12px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:hidden;display:flex;flex-direction:column;transition:border-color .15s}
+  .card.sel{border-color:var(--acc);box-shadow:0 0 0 2px var(--acc2)}
+  .card .pv{background:var(--paper);cursor:pointer;line-height:0;border-bottom:1px solid var(--line)}
+  .card .pv svg{width:100%;height:auto}
+  .card .meta{padding:9px 11px;display:flex;flex-direction:column;gap:3px;flex:1}
+  .card .top{display:flex;gap:6px;align-items:center}
+  .chip{font-size:11.5px;border-radius:5px;padding:1px 7px;background:var(--chip)}
+  .card .ttl{font-weight:600;font-size:14px}
+  .card .ins{font-size:13px}
+  .card .why{font-size:12px;color:var(--muted)}
+  .card .act{display:flex;gap:6px;padding:0 11px 10px}
+  .card label.pick{display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer;margin-left:auto}
+  .shimmer{height:12px;border-radius:4px;background:linear-gradient(90deg,var(--chip),var(--line),var(--chip));background-size:200% 100%;animation:sh 1.2s infinite;width:70%}
+  @keyframes sh{to{background-position:-200% 0}}
+  .edit{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:14px;align-items:start}
+  @media (max-width:980px){.edit{grid-template-columns:minmax(0,1fr)}}
+  .edit>*{min-width:0}
+  .bar>label.hint{max-width:100%;min-width:0;white-space:nowrap}#ttitle,#doctitle{min-width:0;max-width:100%}
+  #expres,.hist,.selbar{overflow-wrap:anywhere}.res .bar a,.selbar .chip,.hist .chip{max-width:100%;min-width:0}
+  .bigpv{background:var(--paper);border:1px solid var(--line);border-radius:8px;line-height:0;overflow:hidden}
+  .bigpv svg{width:100%;height:auto}
+  .ctrl label{display:flex;flex-direction:column;gap:3px;font-size:12.5px;color:var(--muted);margin-bottom:8px}
+  .ctrl .row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .ctrl .row>label{min-width:0}.ctrl input:not([type=checkbox]):not([type=color]),.ctrl select{width:100%;min-width:0}
+  .seg{display:flex;flex-wrap:wrap;gap:4px}.seg button{font-size:12.5px;padding:3px 10px;border-radius:99px}
+  .seg button.on{background:var(--acc2);border-color:var(--acc);color:var(--acc);font-weight:600}
+  .series{display:flex;flex-direction:column;gap:4px;max-height:220px;overflow:auto}
+  .series .s{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--fg);overflow-wrap:anywhere;min-width:0}.series .s input{flex:none}
+  .series input[type=color]{width:30px;height:24px;padding:0;border:none;background:none}
+  .note{font-size:12.5px;color:var(--warn);margin-top:6px}
+  .fmt{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px;margin:10px 0}
+  .fmt button{text-align:left;padding:10px 12px;line-height:1.45}
+  .fmt button b{display:block;font-size:14.5px}.fmt button span{font-size:12px;color:var(--muted)}
+  .res{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-top:10px}
+  .res table{border-collapse:collapse;font-size:13px;width:100%}.res td,.res th{border-bottom:1px solid var(--line);padding:4px 6px;text-align:left}
+  .ok{color:var(--ok)}.ng{color:#b42318}
+  .pill{font-size:12px;border-radius:99px;padding:1px 8px}.pill.n{background:var(--okb);color:var(--ok)}.pill.t{background:var(--acc2);color:var(--acc)}.pill.i{background:var(--warnb);color:var(--warn)}
+  .selbar{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+  .selbar .chip{display:inline-flex;gap:6px;align-items:center;padding:3px 8px;font-size:12.5px}
+  .selbar .chip button{border:none;background:none;padding:0;font-size:13px;color:var(--muted)}
+  .hist li{list-style:none;display:flex;gap:10px;align-items:center;padding:8px 4px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+  .hist ul{padding:0;margin:0}.hist .t{flex:1;min-width:min(200px,100%)}
+  #tip{position:fixed;pointer-events:none;background:#1f2937;color:#fff;font-size:12.5px;padding:5px 9px;border-radius:6px;opacity:0;transition:opacity .1s;z-index:50;max-width:320px}
+  .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#1f2937;color:#fff;padding:7px 16px;border-radius:8px;font-size:13px;opacity:0;transition:opacity .2s;pointer-events:none}
+  .toast.on{opacity:.95}
+  .hidden{display:none!important}
+  details.help{font-size:13px;margin-top:6px}details.help summary{cursor:pointer;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>그래프 만들기 <small>표 → 여러 그래프 후보 → 골라서 → 고칠 수 있는 문서(XLSX·PPTX·DOCX·HWPX)</small></h1>
+  <span class="priv" title="표는 이 서버에서만 처리합니다. 제목·설명 제안에만 이 서버의 로컬 LLM 을 씁니다.">🔒 로컬 처리 · 외부 전송 없음</span>
+  <span class="hint" id="modelinfo"></span>
+</header>
+<div class="tabs" id="tabs"><button data-t="make" class="on">만들기</button><button data-t="hist">이력</button></div>
+
+<div id="v-make">
+  <div class="panel">
+    <h3><span class="n">1</span>데이터 넣기
+      <span class="hint" style="font-weight:400">엑셀에서 셀을 복사해 붙여 넣거나(Ctrl+V), CSV·XLSX 파일을 올리세요</span></h3>
+    <textarea id="paste" placeholder="연도	예산(억원)	인원(명)&#10;2022	1,850	120&#10;2023	2,010	128&#10;…"></textarea>
+    <div class="bar">
+      <button class="primary" id="b-parse">표 읽기</button>
+      <label class="hint" style="display:inline-flex;gap:6px;align-items:center"><input type="file" id="file" accept=".csv,.tsv,.txt,.xlsx,.xlsm" style="font-size:12.5px;max-width:250px"></label>
+      <select id="sheet" class="hidden"></select>
+      <span class="hint">샘플:</span><span id="samples" class="bar" style="margin:0"></span>
+    </div>
+    <div id="parsed" class="hidden">
+      <div class="notes" id="notes"></div>
+      <div class="bar"><span class="hint" id="shape"></span>
+        <label class="hint" style="display:inline-flex;gap:6px;align-items:center">표 제목 <input id="ttitle" style="width:260px"></label>
+        <button class="sm" id="b-transpose" title="행과 열을 바꿉니다">행·열 바꾸기</button></div>
+      <div class="tblwrap"><table class="prev" id="prev"></table></div>
+      <div class="hint" style="margin-top:6px">열 머리글에서 이름·타입(<b class="t-num">숫자</b>·<b class="t-date">날짜·기간</b>·<b class="t-cat">범주</b>)·단위를 고칠 수 있습니다. 천단위 쉼표·%·괄호 음수·단위 행은 자동 처리됩니다.</div>
+      <div class="bar"><button class="primary" id="b-suggest">그래프 후보 만들기</button><span id="st1" class="hint"></span></div>
+    </div>
+  </div>
+
+  <div class="panel hidden" id="p-gal">
+    <h3><span class="n">2</span>그래프 후보 <span class="hint" style="font-weight:400" id="galinfo"></span>
+      <span style="margin-left:auto;display:flex;gap:6px"><button class="sm" id="b-llm">제목·설명 다시 받기</button></span></h3>
+    <div class="gallery" id="gallery"></div>
+  </div>
+
+  <div class="panel hidden" id="p-edit">
+    <h3><span class="n">3</span>편집 <span class="hint" style="font-weight:400" id="editname"></span>
+      <span style="margin-left:auto;display:flex;gap:6px"><button class="sm" id="b-svg">SVG 저장</button><button class="sm" id="b-png">PNG 저장</button><button class="sm" id="b-close">닫기</button></span></h3>
+    <div class="edit">
+      <div><div class="bigpv" id="bigpv"></div><div class="note" id="editnote"></div></div>
+      <div class="ctrl" id="ctrl"></div>
+    </div>
+  </div>
+
+  <div class="panel hidden" id="p-exp">
+    <h3><span class="n">4</span>문서로 내보내기 <span class="hint" style="font-weight:400">받는 사람이 그 프로그램에서 값을 고칠 수 있게 차트 개체로 넣습니다</span></h3>
+    <div class="selbar" id="selbar"></div>
+    <div class="bar">
+      <label class="hint" style="display:inline-flex;gap:6px;align-items:center">문서 제목 <input id="doctitle" style="width:320px"></label>
+      <label class="hint" style="display:inline-flex;gap:5px;align-items:center"><input type="checkbox" id="inctable" checked> 데이터 표도 함께 (DOCX·HWPX)</label>
+    </div>
+    <div class="fmt" id="fmts"></div>
+    <details class="help"><summary>형식별로 무엇이 '고칠 수 있는' 상태로 들어가나요?</summary>
+      <ul>
+        <li><b>XLSX</b> — '데이터' 시트(원본) + 그림마다 시트 하나. 그림 시트의 표는 데이터 시트를 가리키는 <b>수식</b>이고 차트는 <b>엑셀 네이티브 차트</b>라, 데이터 시트 값을 고치면 표와 차트가 함께 바뀝니다. 히스토그램은 COUNTIFS, 상자그림은 QUARTILE.INC 수식. 히트맵은 조건부 서식 색조.</li>
+        <li><b>PPTX</b> — 그림마다 슬라이드 한 장, <b>파워포인트 네이티브 차트</b>(내장 워크북 포함). 차트 오른쪽 클릭 → <b>데이터 편집</b>.</li>
+        <li><b>DOCX</b> — <b>워드 네이티브 차트</b>(차트 파트 + 내장 워크북). 차트 오른쪽 클릭 → <b>데이터 편집</b>. 아래에 데이터 표도 넣습니다.</li>
+        <li><b>HWPX</b> — kordoc 으로 만든 <b>한글 차트 개체</b> + 한글 표. 상자그림·히트맵·<b>이중축</b>은 kordoc 한글 차트가 그 형식(보조 축 등)을 지원하지 않아 <b>그림(PNG) + 표</b>로 넣습니다.</li>
+        <li><b>이중축</b> — XLSX·PPTX·DOCX 는 왼쪽 축 막대(또는 선) + 오른쪽 축 꺾은선의 <b>네이티브 콤보 차트</b>(보조 세로 축). 축 제목은 계열 색, 범례에 '(오른쪽 축)'. 음수가 있으면 두 축의 0선이 맞도록 축 범위를 고정합니다.</li>
+        <li>히트맵은 차트가 아니라 <b>색을 칠한 표</b>로 들어갑니다(PPTX·DOCX). 상자그림의 문서 차트는 수염을 최소~최대로 그립니다(이상값 표시 없음).</li>
+      </ul></details>
+    <div id="expres"></div>
+  </div>
+</div>
+
+<div id="v-hist" class="hidden">
+  <div class="panel hist"><h3>이력 <span class="hint" style="font-weight:400">표·후보·내보낸 파일이 이 서버의 도구 데이터 폴더에 남습니다</span></h3><ul id="histlist"></ul></div>
+</div>
+</div>
+<div id="tip"></div><div class="toast" id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+const S = {table: null, hid: null, cands: [], sel: [], edit: null, meta: null, llm: null, source: ''};
+const TYPES = {num: '숫자', date: '날짜·기간', cat: '범주'};
+function toast(m) { const t = $('#toast'); t.textContent = m; t.classList.add('on'); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('on'), 2400); }
+async function api(path, body) {
+  const r = await fetch(path, body ? {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)} : {});
+  const j = await r.json().catch(() => ({error: 'HTTP ' + r.status}));
+  if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
+  return j;
+}
+
+// ── 탭
+$$('#tabs button').forEach(b => b.onclick = () => {
+  $$('#tabs button').forEach(x => x.classList.toggle('on', x === b));
+  $('#v-make').classList.toggle('hidden', b.dataset.t !== 'make');
+  $('#v-hist').classList.toggle('hidden', b.dataset.t !== 'hist');
+  if (b.dataset.t === 'hist') loadHist();
+});
+
+// ── 1. 데이터
+api('api/meta').then(m => {
+  S.meta = m;
+  $('#modelinfo').textContent = '제목·설명 제안: ' + m.model;
+  $('#samples').innerHTML = m.samples.map(s => `<button class="sm" data-s="${s.id}">${esc(s.label)}</button>`).join('');
+  $$('#samples button').forEach(b => b.onclick = async () => {
+    const j = await api('api/sample/' + b.dataset.s);
+    $('#paste').value = j.text; S.source = '샘플: ' + j.label; FILE = null; S.hid = null; parse();
+  });
+  renderFmts();
+});
+let FILE = null;
+$('#file').onchange = async e => {
+  const f = e.target.files[0]; if (!f) return;
+  const buf = await f.arrayBuffer();
+  let bin = ''; const u = new Uint8Array(buf);
+  for (let i = 0; i < u.length; i += 0x8000) bin += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000));
+  FILE = {file_b64: btoa(bin), filename: f.name}; S.source = f.name; S.hid = null;
+  $('#sheet').classList.add('hidden'); parse(null);
+};
+$('#sheet').onchange = () => parse(null, $('#sheet').value);
+$('#b-parse').onclick = () => { FILE = null; S.hid = null; S.source = S.source.startsWith('샘플') ? S.source : '붙여넣기'; parse(); };
+$('#b-transpose').onclick = () => parse(true);
+async function parse(transpose = null, sheet = null) {
+  try {
+    const body = FILE ? {...FILE, sheet} : {text: $('#paste').value};
+    if (transpose !== null) body.transpose = !!transpose;
+    if (transpose && S.table) {  // 지금 표를 그대로 전치 (열 편집 반영)
+      const j = await api('api/parse', {text: tableToTsv(S.table), transpose: true});
+      return setTable(j);
+    }
+    const j = await api('api/parse', body);
+    if (j.sheets && j.sheets.length > 1) {
+      $('#sheet').innerHTML = j.sheets.map(s => `<option ${s === j.sheet ? 'selected' : ''}>${esc(s)}</option>`).join('');
+      $('#sheet').classList.remove('hidden');
+    }
+    setTable(j);
+  } catch (e) { toast(e.message); }
+}
+function tableToTsv(t) {
+  return [t.columns.map(c => c.name + (c.unit ? `(${c.unit})` : '')).join('\t'), ...t.rows.map(r => r.join('\t'))].join('\n');
+}
+function setTable(j) {
+  S.table = j.table;
+  $('#parsed').classList.remove('hidden');
+  $('#notes').innerHTML = (j.notes || []).map(n => `<span>${esc(n)}</span>`).join('');
+  $('#ttitle').value = S.table.title || '';
+  drawTable();
+  suggest();
+}
+$('#ttitle').oninput = e => { if (S.table) S.table.title = e.target.value; };
+function drawTable() {
+  const t = S.table;
+  $('#shape').textContent = `${t.rows.length}행 × ${t.columns.length}열`;
+  const head = t.columns.map((c, j) => `<th><div class="colhead">
+      <input value="${esc(c.name)}" data-j="${j}" data-k="name" title="열 이름">
+      <div class="r"><select data-j="${j}" data-k="type" class="t-${c.type}">${Object.entries(TYPES).map(([k, v]) => `<option value="${k}" ${k === c.type ? 'selected' : ''}>${v}</option>`).join('')}</select>
+      <input value="${esc(c.unit || '')}" data-j="${j}" data-k="unit" placeholder="단위" title="단위 (예: 억원, %, mm)">
+      <button class="sm" data-del="${j}" title="이 열 빼기">×</button></div></div></th>`).join('');
+  const rows = t.rows.slice(0, 200).map(r => '<tr>' + t.columns.map((c, j) => `<td class="${c.type === 'num' ? 'num' : ''}">${esc(r[j] ?? '')}</td>`).join('') + '</tr>').join('');
+  $('#prev').innerHTML = `<thead><tr>${head}</tr></thead><tbody>${rows}${t.rows.length > 200 ? `<tr><td colspan="${t.columns.length}" class="hint">… ${t.rows.length - 200}행 더</td></tr>` : ''}</tbody>`;
+  $$('#prev [data-k]').forEach(el => el.onchange = () => {
+    const c = S.table.columns[+el.dataset.j]; c[el.dataset.k] = el.value.trim();
+    if (el.dataset.k === 'type') el.className = 't-' + el.value;
+    $('#st1').textContent = '열을 고쳤습니다 → [그래프 후보 만들기] 를 다시 누르세요';
+  });
+  $$('#prev [data-del]').forEach(b => b.onclick = () => {
+    const j = +b.dataset.del; S.table.columns.splice(j, 1); S.table.rows.forEach(r => r.splice(j, 1)); drawTable();
+    $('#st1').textContent = '열을 뺐습니다 → [그래프 후보 만들기] 를 다시 누르세요';
+  });
+}
+
+// ── 2. 갤러리
+$('#b-suggest').onclick = () => suggest();
+async function suggest() {
+  $('#st1').textContent = '후보 만드는 중…';
+  try {
+    const j = await api('api/suggest', {table: S.table, id: S.hid, source: S.source});
+    S.hid = j.id; S.cands = j.candidates; S.sel = []; S.edit = null;
+    S.cands.forEach(c => c.rule_title = c.title);
+    $('#st1').textContent = '';
+    $('#p-gal').classList.remove('hidden'); $('#p-edit').classList.add('hidden');
+    $('#galinfo').textContent = `데이터 모양에 맞는 ${S.cands.length}개 — 카드를 누르면 편집, 체크하면 문서에 담깁니다`;
+    $('#doctitle').value = S.table.title || '';
+    drawGallery(); drawSel();
+    describe();
+    $('#p-gal').scrollIntoView({block: 'start'});
+  } catch (e) { $('#st1').textContent = e.message; }
+}
+function drawGallery() {
+  $('#gallery').innerHTML = S.cands.map(c => `<div class="card ${S.sel.includes(c.id) ? 'sel' : ''}" data-id="${c.id}">
+    <div class="pv" title="눌러서 편집">${c.svg}</div>
+    <div class="meta"><div class="top"><span class="chip">${esc(c.name)}</span>${c.edited ? '<span class="chip">편집함</span>' : ''}
+      <label class="pick"><input type="checkbox" ${S.sel.includes(c.id) ? 'checked' : ''} data-pick="${c.id}"> 문서에 담기</label></div>
+      <div class="ttl">${esc(c.title)}</div>
+      ${c.insight ? `<div class="ins">${esc(c.insight)}</div>` : (S.llm === 'busy' ? '<div class="shimmer"></div>' : '')}
+      <div class="why">왜: ${esc(c.why)}</div></div>
+    <div class="act"><button class="sm" data-ed="${c.id}">편집</button></div></div>`).join('');
+  $$('#gallery .pv').forEach(el => el.onclick = () => openEdit(el.parentNode.dataset.id));
+  $$('#gallery [data-ed]').forEach(el => el.onclick = () => openEdit(el.dataset.ed));
+  $$('#gallery [data-pick]').forEach(el => el.onchange = () => togglePick(el.dataset.pick, el.checked));
+}
+function togglePick(id, on) {
+  S.sel = S.sel.filter(x => x !== id); if (on) S.sel.push(id);
+  $$(`.card[data-id="${id}"]`).forEach(c => c.classList.toggle('sel', on));
+  drawSel();
+}
+$('#b-llm').onclick = () => describe(true);
+async function describe(force) {
+  S.llm = 'busy'; drawGallery();
+  try {
+    const specs = S.cands.map(({svg, ...c}) => c);
+    const j = await api('api/describe', {table: S.table, candidates: specs});
+    S.llm = 'done';
+    let n = 0;
+    for (const c of S.cands) {
+      const it = j.items[c.id]; if (!it) continue;
+      if (it.insight) c.insight = it.insight;
+      if (it.title && (!c.edited_title || force)) { c.title = it.title; n++; await rerender(c); }
+    }
+    drawGallery();
+    if (S.edit) openEdit(S.edit, true);
+    toast(`로컬 LLM(${j.model}) 이 제목·설명 ${Object.keys(j.items).length}개를 붙였습니다` + (j.dropped ? ` · 표에 없는 숫자가 든 문장 ${j.dropped}개는 버림` : ''));
+  } catch (e) {
+    S.llm = 'fail'; drawGallery();
+    toast('제목·설명 제안 실패 (규칙 기반 제목 유지): ' + e.message);
+  }
+}
+async function rerender(c) {
+  const {svg, insight, rule_title, ...spec} = c;
+  const j = await api('api/render', {table: S.table, spec});
+  c.svg = j.svg; c.note = j.note;
+  return j;
+}
+
+// ── 3. 편집
+const KIND_GROUPS = {
+  cat: ['dual', 'col', 'bar', 'col_group', 'bar_group', 'col_stack', 'bar_stack', 'col_stack100', 'line', 'area', 'area_stack', 'pie', 'doughnut', 'heatmap', 'panels', 'index'],
+  other: ['scatter', 'hist', 'box']};
+function openEdit(id, keepScroll) {
+  S.edit = id;
+  const c = S.cands.find(x => x.id === id);
+  $('#p-edit').classList.remove('hidden');
+  $('#editname').textContent = c.name;
+  $('#bigpv').innerHTML = c.svg; $('#editnote').textContent = c.note || '';
+  const cols = S.table.columns, nums = cols.filter(x => x.type === 'num').map(x => x.name), all = cols.map(x => x.name);
+  const opt = (arr, v, blank) => (blank ? `<option value="">${blank}</option>` : '') + arr.map(a => `<option ${a === v ? 'selected' : ''}>${esc(a)}</option>`).join('');
+  const segv = k => k === 'zero_base' ? (c.zero_base === false ? '' : '1') : c[k];
+  const seg = (k, opts) => `<div class="seg" data-seg="${k}">${opts.map(([v, l]) => `<button data-v="${v}" class="${(k === 'zero_base' ? segv(k) : (c[k] || opts[0][0])) === v ? 'on' : ''}">${l}</button>`).join('')}</div>`;
+  const ys = c.ys || [];
+  const isDual = c.kind === 'dual';
+  const seriesNames = c.group ? levels(c.group) : (isDual && c.y2 ? [...ys.filter(y => y !== c.y2), c.y2] : ys);
+  const hidden = c.hidden || [];
+  const pal = S.meta.palette;
+  const isPie = c.kind === 'pie' || c.kind === 'doughnut';
+  const isCat = KIND_GROUPS.cat.includes(c.kind);
+  const colorNames = isPie ? levels(c.x) : seriesNames;
+  $('#ctrl').innerHTML = `
+    <label>제목<input data-f="title" value="${esc(c.title)}"></label>
+    <label>부제 (출처·기준일 등)<input data-f="subtitle" value="${esc(c.subtitle || '')}" placeholder="예: 2025년 결산 기준"></label>
+    <label>그래프 종류<select data-f="kind">${Object.entries(S.meta.kinds).map(([k, v]) => `<option value="${k}" ${k === c.kind ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
+    <div class="row">
+      <label>${c.kind === 'scatter' ? 'x (숫자 열)' : 'x 축 / 항목'}<select data-f="x">${opt(c.kind === 'scatter' ? nums : all, c.x, c.kind === 'hist' || c.kind === 'box' ? '(없음)' : null)}</select></label>
+      <label>나눌 열 (그룹)<select data-f="group">${opt(all.filter(a => a !== c.x), c.group, '(없음)')}</select></label>
+    </div>
+    ${isDual ? `<div class="row"><label>오른쪽 축 열<select data-f="y2">${opt(nums, c.y2)}</select></label>
+      <label>오른쪽 축 이름<input data-f="y2_title" value="${esc(c.y2_title ?? '')}" placeholder="(자동)"></label></div>
+      <label>모양${seg('dual_shape', [['bar_line', '왼쪽 막대 + 오른쪽 선'], ['line_line', '선 + 선']])}</label>
+      <label>축 시작<span class="hint">0선은 음수가 있을 때 두 축이 맞춰집니다</span>${seg('zero_base', [['1', '둘 다 0부터'], ['', '오른쪽 축은 데이터 범위']])}</label>
+      <div class="note">두 축 눈금이 서로 독립입니다 — 선과 막대의 높이 비교로 추세를 판단하지 않도록 주의</div>` : ''}
+    <label>${isDual ? '왼쪽 축 열 (1~2개 권장)' : '값 열'} <span class="hint">(${c.group ? '그룹이 있으면 첫 열만 사용' : '체크한 열이 계열'})</span>
+      <div class="series">${nums.map(n => `<span class="s"><input type="checkbox" data-y="${esc(n)}" ${ys.includes(n) ? 'checked' : ''}> ${esc(n)}</span>`).join('')}</div></label>
+    <label>${isPie ? '조각 색' : '계열 표시·색'} <span class="hint">끄면 그래프에서 빠지고 색은 그대로 유지</span>
+      <div class="series">${colorNames.map((n, i) => `<span class="s"><input type="color" data-col="${i}" value="${(c.colors && c.colors[i]) || pal[i % pal.length]}">
+        ${isPie ? '' : `<input type="checkbox" data-hide="${esc(n)}" ${hidden.includes(n) ? '' : 'checked'}>`} ${esc(n)}</span>`).join('')}</div>
+      <button class="sm" id="b-palreset" style="align-self:flex-start">기본 색으로</button></label>
+    <div class="row"><label>x 축 이름<input data-f="x_title" value="${esc(c.x_title ?? '')}" placeholder="(자동)"></label>
+      <label>y 축 이름<input data-f="y_title" value="${esc(c.y_title ?? '')}" placeholder="(자동)"></label></div>
+    <label>범례${seg('legend', [['top', '위'], ['bottom', '아래'], ['right', '오른쪽'], ['none', '숨김']])}</label>
+    <label>값 라벨${seg('labels', [['auto', '자동'], ['all', '모두'], ['none', '없음']])}</label>
+    ${isCat ? `<label>정렬${seg('sort', [['none', '원래 순서'], ['desc', '큰 값부터'], ['asc', '작은 값부터']])}</label>` : ''}
+    <div class="row">
+      ${c.kind === 'scatter' ? `<label>추세선<select data-f="trend"><option value="1" ${c.trend ? 'selected' : ''}>표시</option><option value="" ${c.trend ? '' : 'selected'}>숨김</option></select></label>` : ''}
+      ${c.kind === 'hist' ? `<label>구간 수<input type="number" min="3" max="40" data-f="bins" value="${c.bins || ''}" placeholder="자동"></label>` : ''}
+      ${isCat ? `<label>중복 x 묶기<select data-f="agg"><option value="sum" ${c.agg !== 'mean' ? 'selected' : ''}>합계</option><option value="mean" ${c.agg === 'mean' ? 'selected' : ''}>평균</option></select></label>
+      <label>상위 N 개만<input type="number" min="0" data-f="top" value="${c.top || ''}" placeholder="전체"></label>` : ''}
+    </div>
+    <div class="bar"><label class="pick" style="flex-direction:row;color:var(--fg);font-size:13.5px"><input type="checkbox" id="e-pick" ${S.sel.includes(id) ? 'checked' : ''}> 문서에 담기</label>
+      <button class="sm" id="b-dup">복제해서 변형 만들기</button></div>`;
+  const upd = () => { c.edited = true; clearTimeout(openEdit._t); openEdit._t = setTimeout(async () => {
+    try { await rerender(c); $('#bigpv').innerHTML = c.svg; $('#editnote').textContent = c.note || '';
+      const card = $(`.card[data-id="${c.id}"] .pv`); if (card) card.innerHTML = c.svg;
+      const tt = $(`.card[data-id="${c.id}"] .ttl`); if (tt) tt.textContent = c.title; drawSel();
+    } catch (e) { $('#editnote').textContent = e.message; } }, 120); };
+  $$('#ctrl [data-f]').forEach(el => el.oninput = el.onchange = () => {
+    const f = el.dataset.f; let v = el.value;
+    if (f === 'trend') v = !!v; if (f === 'bins' || f === 'top') v = +v || 0;
+    if ((f === 'x_title' || f === 'y_title') && v === '') { delete c[f]; upd(); return; }
+    if (f === 'group' || f === 'x') v = v || null;
+    if (f === 'title') c.edited_title = true;
+    if ((f === 'x_title' || f === 'y2_title') && v === '') { delete c[f]; upd(); return; }
+    c[f] = v;
+    if (f === 'kind' && v === 'dual' && !c.y2) { c.y2 = nums.find(n => !(c.ys || []).includes(n)) || nums[nums.length - 1]; c.ys = (c.ys || []).filter(y => y !== c.y2).slice(0, 2); }
+    if (f === 'y2') { c.ys = (c.ys || []).filter(y => y !== v); upd(); setTimeout(() => openEdit(id, true), 200); return; }
+    if (f === 'kind' || f === 'group' || f === 'x') { c.name = S.meta.kinds[c.kind]; c.hidden = []; upd(); setTimeout(() => openEdit(id, true), 200); return; }
+    upd();
+  });
+  $$('#ctrl [data-seg] button').forEach(b => b.onclick = () => {
+    const k = b.parentNode.dataset.seg; c[k] = k === 'zero_base' ? b.dataset.v === '1' : b.dataset.v;
+    $$(`#ctrl [data-seg="${k}"] button`).forEach(x => x.classList.toggle('on', x === b)); upd();
+  });
+  $$('#ctrl [data-y]').forEach(el => el.onchange = () => {
+    const y = el.dataset.y; c.ys = (c.ys || []).filter(v => v !== y); if (el.checked) c.ys.push(y);
+    c.ys = nums.filter(n => c.ys.includes(n)); upd(); setTimeout(() => openEdit(id, true), 200);
+  });
+  $$('#ctrl [data-hide]').forEach(el => el.onchange = () => {
+    const n = el.dataset.hide; c.hidden = (c.hidden || []).filter(v => v !== n); if (!el.checked) c.hidden.push(n); upd();
+  });
+  $$('#ctrl [data-col]').forEach(el => el.oninput = () => {
+    c.colors = c.colors || []; c.colors[+el.dataset.col] = el.value; upd();
+  });
+  $('#b-palreset').onclick = () => { delete c.colors; upd(); setTimeout(() => openEdit(id, true), 200); };
+  $('#e-pick').onchange = e => { togglePick(id, e.target.checked); $$(`[data-pick="${id}"]`).forEach(x => x.checked = e.target.checked); };
+  $('#b-dup').onclick = () => {
+    const n = JSON.parse(JSON.stringify(c)); n.id = 'c' + (Math.max(...S.cands.map(x => +x.id.slice(1) || 0)) + 1);
+    n.title = c.title + ' (변형)'; S.cands.splice(S.cands.indexOf(c) + 1, 0, n); drawGallery(); openEdit(n.id);
+  };
+  if (!keepScroll) $('#p-edit').scrollIntoView({block: 'start'});
+}
+function levels(col) {
+  if (!col) return [];
+  const j = S.table.columns.findIndex(c => c.name === col); const out = [];
+  for (const r of S.table.rows) { const v = r[j] ?? ''; if (!out.includes(v)) out.push(v); }
+  return out;
+}
+$('#b-close').onclick = () => { $('#p-edit').classList.add('hidden'); S.edit = null; };
+function dl(blob, name) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000); }
+const curSvg = () => S.cands.find(x => x.id === S.edit)?.svg || '';
+const fname = () => (S.cands.find(x => x.id === S.edit)?.title || 'chart').replace(/[\\/:*?"<>|\s]+/g, '_');
+$('#b-svg').onclick = () => dl(new Blob([curSvg()], {type: 'image/svg+xml'}), fname() + '.svg');
+$('#b-png').onclick = () => {
+  const s = curSvg(), m = s.match(/viewBox="0 0 (\d+) (\d+)"/), w = +m[1], h = +m[2];
+  const img = new Image(); img.onload = () => {
+    const cv = document.createElement('canvas'); cv.width = w * 3; cv.height = h * 3;
+    const g = cv.getContext('2d'); g.scale(3, 3); g.drawImage(img, 0, 0, w, h); cv.toBlob(b => dl(b, fname() + '.png'));
+  };
+  img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(s);
+};
+
+// ── 4. 내보내기
+function drawSel() {
+  $('#p-exp').classList.toggle('hidden', !S.cands.length);
+  $('#selbar').innerHTML = S.sel.length ? '<span class="hint">담은 그래프 (이 순서로 들어갑니다):</span>' + S.sel.map((id, i) => {
+    const c = S.cands.find(x => x.id === id);
+    return `<span class="chip">${i + 1}. ${esc(c?.title || id)} <button data-un="${id}" title="빼기">×</button></span>`;
+  }).join('') : '<span class="hint">갤러리에서 <b>문서에 담기</b>를 체크하세요 (여러 개 가능)</span>';
+  $$('#selbar [data-un]').forEach(b => b.onclick = () => { togglePick(b.dataset.un, false); $$(`[data-pick="${b.dataset.un}"]`).forEach(x => x.checked = false); });
+  $$('#fmts button').forEach(b => b.disabled = !S.sel.length || b.dataset.off === '1');
+}
+function renderFmts() {
+  const desc = {xlsx: '데이터 시트 + 엑셀 차트 (데이터를 고치면 차트 갱신)', pptx: '슬라이드마다 차트 · 데이터 편집 가능',
+    docx: '워드 차트 · 데이터 편집 가능 + 데이터 표', hwpx: '한글 차트 개체 + 한글 표 (일부는 그림)'};
+  $('#fmts').innerHTML = S.meta.formats.map(f => `<button data-fmt="${f.id}" data-off="${f.ok ? 0 : 1}" ${f.ok ? '' : 'title="이 서버에 HWPX 생성기(kordoc)가 없습니다"'}>
+    <b>${esc(f.label)}</b><span>${f.ok ? desc[f.id] : '이 서버에서는 사용 불가 (kordoc 없음)'}</span></button>`).join('');
+  $$('#fmts button').forEach(b => b.onclick = () => doExport(b.dataset.fmt));
+  drawSel();
+}
+async function doExport(fmt) {
+  const specs = S.sel.map(id => { const {svg, insight, rule_title, note, ...s} = S.cands.find(x => x.id === id); return s; });
+  $('#expres').innerHTML = '<div class="res hint">만드는 중… (파일을 만든 뒤 다시 열어 차트 구조를 검사합니다)</div>';
+  try {
+    const j = await api('api/export', {id: S.hid, table: S.table, specs, format: fmt, title: $('#doctitle').value || S.table.title, include_table: $('#inctable').checked});
+    S.hid = j.id;
+    const pill = m => ({native: '<span class="pill n">네이티브 차트</span>', 'hwp-native': '<span class="pill n">한글 차트</span>',
+      table: '<span class="pill t">색 칠한 표</span>', image: '<span class="pill i">그림+표</span>'}[m] || m);
+    const v = j.verify;
+    $('#expres').innerHTML = `<div class="res">
+      <div class="bar"><a href="${j.url}" download><button class="primary">⬇ ${esc(j.file)} 받기</button></a><span class="hint">${(j.size / 1024).toFixed(0)} KB</span>
+        <span class="${v.ok ? 'ok' : 'ng'}">${v.ok ? '✔ 구조 검사 통과' : '✘ 검사 경고'} — 차트 ${v.charts}개${v.tables ? ` · 표 ${v.tables}개` : ''}${v.images ? ` · 그림 ${v.images}개` : ''}</span></div>
+      <table><tr><th>그림</th><th>제목</th><th>들어간 방식</th></tr>${j.report.map(r => `<tr><td>${r.n}</td><td>${esc(r.title)}</td><td>${r.modes.map(pill).join(' ')} <span class="hint">${esc(r.label)}</span></td></tr>`).join('')}</table>
+      <details class="help"><summary>검사 내용 (파일을 다시 열어 확인한 것)</summary><ul>${v.checks.map(x => `<li>${esc(x)}</li>`).join('')}${v.errors.map(x => `<li class="ng">${esc(x)}</li>`).join('')}</ul>
+      <div class="hint">${{xlsx: '엑셀: 그림 시트 표의 값은 수식이라 처음 열 때 계산됩니다. 데이터 시트 값을 고치면 차트가 따라 바뀝니다.',
+        pptx: '파워포인트: 차트 오른쪽 클릭 → 데이터 편집.', docx: '워드: 차트 오른쪽 클릭 → 데이터 편집 (내장 워크북). 한글(HWP)에서 DOCX 를 열면 차트가 그림처럼 보일 수 있습니다.',
+        hwpx: '한글: 차트 개체를 두 번 눌러 차트 데이터 편집. 이 서버에는 한글이 없어 한글에서 직접 열어 보는 검사는 하지 못했습니다(kordoc 구조 검증만).'}[fmt]}</div></details></div>`;
+  } catch (e) { $('#expres').innerHTML = `<div class="res ng">${esc(e.message)}</div>`; }
+}
+
+// ── 이력
+async function loadHist() {
+  const hs = await api('api/history');
+  $('#histlist').innerHTML = hs.length ? hs.map(h => `<li><span class="t"><b>${esc(h.title)}</b> <span class="hint">${esc(h.ts.replace('T', ' '))} · ${h.rows}행×${h.cols}열 · ${esc(h.source)}</span><br>
+      ${h.exports.map(x => `<a href="api/file/${h.id}/${encodeURIComponent(x.file)}" download class="chip">${esc(x.format.toUpperCase())} ${esc(x.file)}</a>`).join(' ')}</span>
+      <button class="sm" data-open="${h.id}">열기</button><button class="sm" data-del="${h.id}">삭제</button></li>`).join('') : '<li class="hint">아직 없습니다</li>';
+  $$('#histlist [data-open]').forEach(b => b.onclick = async () => {
+    const rec = await api('api/history/' + b.dataset.open);
+    S.hid = rec.id; S.table = rec.table; S.source = rec.source || '';
+    $$('#tabs button')[0].click();
+    setTable({table: rec.table, notes: ['이력에서 불러옴']});
+  });
+  $$('#histlist [data-del]').forEach(b => b.onclick = async () => {
+    if (!confirm('이 이력과 내보낸 파일을 지울까요?')) return;
+    await api('api/history/delete', {id: b.dataset.del}); loadHist();
+  });
+}
+
+// ── 툴팁 (SVG 의 data-tip)
+const tip = $('#tip');
+document.addEventListener('mousemove', e => {
+  const t = e.target.closest && e.target.closest('[data-tip]');
+  if (!t) { tip.style.opacity = 0; return; }
+  tip.textContent = t.dataset.tip; tip.style.opacity = 1;
+  tip.style.left = Math.min(e.clientX + 14, innerWidth - tip.offsetWidth - 8) + 'px'; tip.style.top = (e.clientY + 14) + 'px';
+});
+// 붙여넣기 즉시 읽기
+$('#paste').addEventListener('paste', () => setTimeout(() => { FILE = null; S.source = '붙여넣기'; S.hid = null; parse(); }, 30));
+</script>
+</body>
+</html>

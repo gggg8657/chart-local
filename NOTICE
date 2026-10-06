@@ -1,0 +1,22 @@
+chart-local
+===========
+
+Third-party (동봉하지 않음 — setup.sh 가 pip 로 설치하거나 wheels/ 에서 설치):
+  openpyxl — MIT License
+  python-pptx — MIT License (차트 XML·내장 워크북 생성. DOCX 차트도 이것으로 만든 파트를 옮겨 심음)
+  python-docx — MIT License
+  lxml (BSD-3), Pillow (HPND), XlsxWriter (BSD-2) — python-pptx 의존성
+선택 사용(동봉 안 함):
+  kordoc (MIT, ../kordoc-local/node_modules) — HWPX 생성. 한글 차트 파트(OOXML chartSpace)는 kordoc 의 ```chart 펜스 기능을 그대로 씀
+  rsvg-convert (librsvg, LGPL) — 있으면 HWPX 의 상자그림·히트맵을 PNG 로 넣음
+
+그래프 색·표시 규칙은 범주색 고정 순서(8색)·막대 두께/둥근 끝·2px 바탕색 틈·이중축 금지 등 일반적인 데이터 시각화 원칙을 따르며,
+SVG 렌더러는 이 패키지에서 새로 작성했습니다(외부 차트 라이브러리·CDN 없음). 샘플 데이터 3종은 가상의 값입니다.
+
+Files authored for this package (MIT): app.py, core.py, svg.py, export.py, samples.py, ui.html, selftest.py, setup.sh, README.md
+
+LLM (not bundled): called via an OpenAI-compatible API; default deployment is Ollama (https://github.com/ollama/ollama, MIT)
+  serving Google Gemma (gemma4:31b, https://ai.google.dev/gemma — see Gemma's terms of use).
+
+This package: Copyright (c) 2026 gggg8657 <dongjukim.dev@gmail.com>
+화면 하단·메타데이터의 저작자 표기는 지우거나 바꾸지 마세요.
