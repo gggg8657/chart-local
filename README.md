@@ -2,6 +2,8 @@
 
 엑셀에서 복사한 표(또는 CSV·XLSX)를 넣으면 데이터 모양에 맞는 그래프 후보 6~12개를 한꺼번에 그려 보여 주고, 고른 그래프를 **받는 사람이 그 프로그램에서 값을 고칠 수 있는 차트 개체**로 엑셀·파워포인트·워드·한글 문서에 담아 줍니다.
 
+> ⚠️ 연구·내부 시험용 프로토타입입니다(배포·상업 서비스용 아님). 제3자 구성요소의 라이선스는 THIRD_PARTY_NOTICES.md 를 확인하세요.
+
 ![chart-local 그래프 후보 갤러리 — ① 추천 카드](docs/img/chart-gallery.png)
 
 ## 무엇을 하나
@@ -109,13 +111,17 @@ HWPX 는 같은 서버의 kordoc-local(Node + kordoc) 을 씁니다.
 ## 출처·감사 (Credits)
 
 - [openpyxl](https://foss.heptapod.net/openpyxl/openpyxl) (MIT), [python-pptx](https://github.com/scanny/python-pptx) (MIT), [python-docx](https://github.com/python-openxml/python-docx) (MIT), lxml (BSD-3), XlsxWriter (BSD-2), Pillow (HPND)
-- 선택: [kordoc](https://github.com/chrisryugj/kordoc) (MIT, chrisryugj) — HWPX 차트 생성, rsvg-convert (librsvg, LGPL)
+- 선택: [kordoc](https://github.com/chrisryugj/kordoc) (MIT, chrisryugj) — HWPX 차트 생성, rsvg-convert (librsvg, LGPL-2.1+, 외부 명령으로 호출만 함)
 - SVG 렌더러는 이 패키지에서 새로 작성(외부 차트 라이브러리 없음). 샘플 데이터는 가상의 값입니다.
-- **LLM 실행** — OpenAI 호환 API 로 호출합니다(모델 가중치는 동봉하지 않음). 기본 배포는 [Ollama](https://github.com/ollama/ollama) (MIT) 위의 Google [Gemma](https://ai.google.dev/gemma) `gemma4:31b` — 모델 이용 조건은 Gemma 배포처 참고.
+- **LLM 실행** — OpenAI 호환 API 로 호출합니다(모델 가중치는 동봉하지 않음). 기본 배포는 [Ollama](https://github.com/ollama/ollama) (MIT) 위의 Google [Gemma 4](https://ai.google.dev/gemma) `gemma4:31b` ([Apache-2.0](https://ai.google.dev/gemma/docs/gemma_4_license)).
 - 이 도구는 [agent-page-portal](https://github.com/gggg8657/agent-page-portal) 에 연결해 쓰도록 만들었습니다(단독 실행도 됨).
 
-저작권 표기·전체 목록은 `NOTICE` 를 보세요.
+버전·라이선스·상업 이용 여부 전체 표는 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md), 저작권 표기는 `NOTICE` 를 보세요.
 
 ## 라이선스
 
-MIT License — Copyright (c) 2026 gggg8657 (DongJu Kim). `LICENSE` 참고.
+MIT License — Copyright (c) 2026 DongJu Kim (gggg8657). `LICENSE` 참고. 제3자 구성요소는 각자의 라이선스를 따릅니다.
+
+## 만든 사람
+
+DongJu Kim (gggg8657) — 설계·구현
