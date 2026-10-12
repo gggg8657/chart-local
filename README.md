@@ -52,12 +52,15 @@ python3 selftest.py           # LLM 없이 검증 (WORKSPACE 를 임시 폴더�
 
 | 환경변수 | 기본 | 설명 |
 |---|---|---|
-| `PORT` | `8786` | 0.0.0.0 에 띄움 |
+| `PORT` | `8786` | |
+| `BIND` | `0.0.0.0` | 듣는 주소. 포털은 `127.0.0.1` 로 띄워 포털을 거쳐서만 접근 |
 | `WORKSPACE` | `./_workspace` | 이력 `history/<id>/rec.json` + 내보낸 파일 |
 | `LLM_API` / `LLM_BASE_URL` / `LLM_MODEL` | `ollama` / `http://localhost:11434` / `qwen3:8b` | 후보 제목·설명 제안에만 씀. 없으면 규칙 기반 제목 그대로. 포털로 띄우면 로컬 Ollama `gemma4:31b` |
 | `LLM_API_KEY` | (없음) | OpenAI 호환 서버 키 |
 | `NUM_CTX` | `8192` | Ollama 컨텍스트 |
 | `KORDOC_CLI` | `../kordoc-local/node_modules/kordoc/dist/cli.js` | HWPX 생성기. 없으면 HWPX 만 꺼짐 |
+
+이력(표·내보낸 파일)은 사용자별로 따로 저장합니다(포털 접속자 기준, 포털이 넘기는 `X-Agent-User` 헤더 → `$WORKSPACE/u/<사용자>/history`). 서버 주인(헤더 없음·`owner`)은 `$WORKSPACE` 그대로라 예전 기록도 보입니다.
 
 ## 구성
 - `core.py` — 붙여넣기(탭)·CSV(cp949 포함)·XLSX(시트 선택) 읽기, 제목 줄·`(단위: 억원)` 줄·머리글·머리글 아래 단위 행·`예산(억원)` 처리,

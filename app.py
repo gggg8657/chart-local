@@ -177,16 +177,26 @@ def hid_ok(hid):
     return hid
 
 
-def hdir(hid):
-    return os.path.join(WS, "history", hid_ok(hid))
+def user_ws(h):
+    """포털이 넘긴 사용자별 작업 폴더. owner(서버 주인)·헤더 없음(단독 실행) = 예전 WORKSPACE 그대로"""
+    u = (h.headers.get("X-Agent-User") or "owner").strip()
+    if u == "owner":
+        return WS
+    d = os.path.join(WS, "u", re.sub(r"[^A-Za-z0-9_.-]", "_", u)[:64] or "_")
+    os.makedirs(d, exist_ok=True)
+    return d
 
 
-def hist_load(hid):
-    return json.loads(read(os.path.join(hdir(hid), "rec.json")))
+def hdir(hid, ws=WS):
+    return os.path.join(ws, "history", hid_ok(hid))
 
 
-def hist_save(rec):
-    d = hdir(rec["id"])
+def hist_load(hid, ws=WS):
+    return json.loads(read(os.path.join(hdir(hid, ws), "rec.json")))
+
+
+def hist_save(rec, ws=WS):
+    d = hdir(rec["id"], ws)
     os.makedirs(d, exist_ok=True)
     p = os.path.join(d, "rec.json")
     with LOCK:
@@ -195,14 +205,14 @@ def hist_save(rec):
         os.replace(p + ".tmp", p)
 
 
-def hist_list(limit=200):
-    d = os.path.join(WS, "history")
+def hist_list(limit=200, ws=WS):
+    d = os.path.join(ws, "history")
     if not os.path.isdir(d):
         return []
     out = []
     for name in sorted(os.listdir(d), reverse=True)[:limit]:
         try:
-            r = hist_load(name)
+            r = hist_load(name, ws)
             out.append({"id": r["id"], "title": r.get("title", ""), "ts": r.get("ts", ""), "rows": len(r["table"]["rows"]),
                         "cols": len(r["table"]["columns"]), "exports": r.get("exports", [])[-4:], "source": r.get("source", "")})
         except Exception:
@@ -210,8 +220,8 @@ def hist_list(limit=200):
     return out
 
 
-def hist_delete(hid):
-    d = hdir(hid)
+def hist_delete(hid, ws=WS):
+    d = hdir(hid, ws)
     if os.path.isdir(d):
         shutil.rmtree(d)
 
@@ -259,7 +269,7 @@ def do_parse(req):
     return {"table": table, "notes": notes, "sheets": sheets, "sheet": sheet}
 
 
-def do_suggest(req):
+def do_suggest(req, ws=WS):
     table = check_table(req.get("table"))
     cands = core.recommend(table)
     if not cands:
@@ -270,7 +280,7 @@ def do_suggest(req):
     rec = None
     if hid:
         try:
-            rec = hist_load(hid)
+            rec = hist_load(hid, ws)
         except (FileNotFoundError, ValueError):
             rec = None
     if not rec:
@@ -279,7 +289,7 @@ def do_suggest(req):
                title=table.get("title") or (cands[0].get("title") if cands else "") or "표",
                source=req.get("source") or rec.get("source", ""))
     rec["candidates"] = [{k: v for k, v in c.items() if k != "svg"} for c in cands]
-    hist_save(rec)
+    hist_save(rec, ws)
     return {"id": rec["id"], "candidates": cands}
 
 
@@ -302,7 +312,7 @@ def safe_name(s):
     return (s or "그래프")[:40]
 
 
-def do_export(req):
+def do_export(req, ws=WS):
     table = check_table(req.get("table"))
     specs = req.get("specs") or []
     if not specs:
@@ -319,14 +329,14 @@ def do_export(req):
             raise ValueError("알 수 없는 그래프 종류")
     hid = req.get("id")
     try:
-        rec = hist_load(hid) if hid else None
+        rec = hist_load(hid, ws) if hid else None
     except (FileNotFoundError, ValueError):
         rec = None
     if not rec:
         rec = {"id": new_id(), "exports": [], "title": req.get("title") or "그래프", "table": table,
                "ts": datetime.datetime.now().isoformat(timespec="seconds")}
     doc_title = (req.get("title") or rec.get("title") or "그래프").strip()[:80]
-    d = hdir(rec["id"])
+    d = hdir(rec["id"], ws)
     os.makedirs(d, exist_ok=True)
     fname = f"{safe_name(doc_title)}_{datetime.datetime.now():%m%d_%H%M%S}.{fmt_}"
     path = os.path.join(d, fname)
@@ -336,7 +346,7 @@ def do_export(req):
     rec["selected"] = specs
     rec.setdefault("exports", []).append({"file": fname, "format": fmt_, "ts": datetime.datetime.now().isoformat(timespec="seconds"),
                                           "n": len(specs), "ok": ver["ok"]})
-    hist_save(rec)
+    hist_save(rec, ws)
     return {"id": rec["id"], "file": fname, "url": f"api/file/{rec['id']}/{urllib.parse.quote(fname)}", "report": report,
             "verify": ver, "size": os.path.getsize(path)}
 
@@ -401,7 +411,7 @@ class H(BaseHTTPRequestHandler):
             if path == "/api/models":
                 return self._send(models())
             if path == "/api/history":
-                return self._send(hist_list())
+                return self._send(hist_list(ws=user_ws(self)))
             m = re.fullmatch(r"/api/sample/(\w+)", path)
             if m:
                 s = next((x for x in samples.SAMPLES if x["id"] == m.group(1)), None)
@@ -410,13 +420,13 @@ class H(BaseHTTPRequestHandler):
                 return self._send({"text": s["text"], "label": s["label"]})
             m = re.fullmatch(r"/api/history/([\w-]+)", path)
             if m:
-                return self._send(hist_load(m.group(1)))
+                return self._send(hist_load(m.group(1), user_ws(self)))
             m = re.fullmatch(r"/api/file/([\w-]+)/([^/]+)", path)
             if m:
                 name = m.group(2)
                 if "/" in name or name.startswith(".") or "\\" in name:
                     raise ValueError("잘못된 파일 이름")
-                p = os.path.join(hdir(m.group(1)), name)
+                p = os.path.join(hdir(m.group(1), user_ws(self)), name)
                 ext = name.rsplit(".", 1)[-1].lower()
                 with open(p, "rb") as f:
                     blob = f.read()
@@ -436,9 +446,11 @@ class H(BaseHTTPRequestHandler):
             req = json.loads(self.rfile.read(n) or b"{}")
         except ValueError:
             return self._send({"error": "잘못된 요청"}, code=400)
-        routes = {"/api/parse": do_parse, "/api/suggest": do_suggest, "/api/render": do_render, "/api/export": do_export,
+        ws = user_ws(self)
+        routes = {"/api/parse": do_parse, "/api/suggest": lambda r: do_suggest(r, ws), "/api/render": do_render,
+                  "/api/export": lambda r: do_export(r, ws),
                   "/api/describe": lambda r: describe(check_table(r.get("table")), r.get("candidates") or [], r.get("model")),
-                  "/api/history/delete": lambda r: (hist_delete(r.get("id")), {"ok": True})[1]}
+                  "/api/history/delete": lambda r: (hist_delete(r.get("id"), ws), {"ok": True})[1]}
         fn = routes.get(self.path)
         if not fn:
             return self._send({"error": "없는 경로"}, code=404)
@@ -470,4 +482,4 @@ if __name__ == "__main__":
         sys.exit(0)
     print(f"chart local → http://localhost:{PORT}  (llm={LLM_API} {LLM_BASE} {MODEL}, workspace={WS}, "
           f"hwpx={'kordoc' if export.hwpx_available() else '없음'})  {_SIG}")
-    ThreadingHTTPServer(("0.0.0.0", PORT), H).serve_forever()
+    ThreadingHTTPServer((os.environ.get("BIND", "0.0.0.0"), PORT), H).serve_forever()
