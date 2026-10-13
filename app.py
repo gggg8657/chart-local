@@ -75,7 +75,7 @@ def llm(system, user, model=None, temperature=0.3):
                     continue
                 raise RuntimeError(f"LLM HTTP {e.code}: {msg[:300]}")
     except urllib.error.URLError as e:
-        raise RuntimeError(f"LLM 서버 연결 실패 ({LLM_BASE}): {e.reason}")
+        raise RuntimeError(f"LLM 서버 연결 실패: {e.reason}")  # 내부 주소는 응답에 넣지 않음
     return ""
 
 
@@ -442,7 +442,10 @@ class H(BaseHTTPRequestHandler):
         try:
             n = int(self.headers.get("Content-Length") or 0)
             if n > MAX_UPLOAD * 1.4:
-                return self._send({"error": "요청이 너무 큽니다"}, code=413)
+                self.close_connection = True
+                while n > 0 and self.rfile.read(min(n, 1 << 20)):  # 본문을 버려 읽어야 포털(프록시)이 502 대신 413 을 받는다
+                    n -= 1 << 20
+                return self._send({"error": f"요청이 너무 큽니다 (파일 {MAX_UPLOAD // 2**20}MB 이하)"}, code=413)
             req = json.loads(self.rfile.read(n) or b"{}")
         except ValueError:
             return self._send({"error": "잘못된 요청"}, code=400)
