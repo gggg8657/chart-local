@@ -85,6 +85,53 @@
   .toast.on{opacity:.95}
   .hidden{display:none!important}
   details.help{font-size:13px;margin-top:6px}details.help summary{cursor:pointer;color:var(--muted)}
+  /* 포털 어두운 테마(html[data-ag-theme$=dark])일 때만: 서버(svg.py)가 흰 종이 색으로 그린 그래프를 화면에서만 테마 색으로.
+     색은 svg.py 의 고정 색(SURFACE·INK·INK2·MUTED·GRID·BASE·PAL·SEQ)을 속성 값으로 골라 바꾼다 — svg.py 색을 바꾸면 여기도.
+     내보내기(SVG·PNG 저장, 문서)는 원래 문자열을 쓰므로 흰 종이 그대로. 포털 없이 실행·classic-light 는 아무것도 안 바뀜 */
+  html[data-ag-theme$="dark"] :is(.card .pv,.bigpv){background:var(--card)}
+  html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg{
+    --pv-bg:var(--card);
+    --c1:#3987e5;--c2:#d95926;--c3:#199e70;--c4:#c98500;--c5:#d55181;--c6:#008300;--c7:#9085e9;--c8:#e66767}  /* 계열색: dataviz 기준 팔레트의 어두운 바탕용 단계(같은 색상·순서) */
+  html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg>rect:first-child,html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg :is(circle,path)[fill="#ffffff"]{fill:var(--pv-bg)}
+  html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [stroke="#ffffff"]{stroke:var(--pv-bg)}
+  html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg text[fill="#0b0b0b"]:not([data-bg]){fill:var(--ag-ink)}
+  html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [stroke="#0b0b0b"]{stroke:var(--ag-ink)}
+  html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [fill="#52514e"]{fill:var(--ag-ink-2)}
+  html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [stroke="#52514e"]{stroke:var(--ag-ink-2)}
+  html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [fill="#898781"]{fill:var(--ag-ink-3)}
+  html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [stroke="#e1e0d9"]{stroke:var(--ag-line)}
+  html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [stroke="#c3c2b7"]{stroke:var(--ag-line-2)}
+  html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [fill="#f0efec"]{fill:var(--ag-surface-3)}
+  html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [fill="#2a78d6"]{fill:var(--c1)}html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [stroke="#2a78d6"]{stroke:var(--c1)}
+  html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [fill="#eb6834"]{fill:var(--c2)}html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [stroke="#eb6834"]{stroke:var(--c2)}
+  html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [fill="#1baf7a"]{fill:var(--c3)}html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [stroke="#1baf7a"]{stroke:var(--c3)}
+  html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [fill="#eda100"]{fill:var(--c4)}html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [stroke="#eda100"]{stroke:var(--c4)}
+  html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [fill="#e87ba4"]{fill:var(--c5)}html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [stroke="#e87ba4"]{stroke:var(--c5)}
+  html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [fill="#4a3aa7"]{fill:var(--c7)}html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [stroke="#4a3aa7"]{stroke:var(--c7)}
+  html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [fill="#e34948"]{fill:var(--c8)}html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [stroke="#e34948"]{stroke:var(--c8)}
+  /* 계열색을 글자로 쓴 곳(이중축 축 제목 — svg.py darken) → 어두운 바탕 4.5:1 */
+  html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg text:is([fill="#b75128"],[fill="#eb6834"]){fill:#db6131}
+  html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg text:is([fill="#15885f"],[fill="#1baf7a"]){fill:#199e70}
+  html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg text:is([fill="#b87d00"],[fill="#8f6100"],[fill="#eda100"]){fill:#c98500}
+  html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg text:is([fill="#b45f7f"],[fill="#e87ba4"]){fill:#d75a87}
+  html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg text[fill="#008300"]{fill:#339c33}
+  html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg text:is([fill="#b13838"],[fill="#e34948"]){fill:var(--c8)}
+  /* 히트맵 순차색 — 어두운 바탕에서는 0 쪽이 바탕으로 가라앉게 단계를 뒤집음(칸·범례 그라데이션) */
+  html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [fill="#cde2fb"]{fill:#0d366b}html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [stop-color="#cde2fb"]{stop-color:#0d366b}
+  html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [fill="#b7d3f6"]{fill:#104281}html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [stop-color="#b7d3f6"]{stop-color:#104281}
+  html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [fill="#9ec5f4"]{fill:#184f95}html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [stop-color="#9ec5f4"]{stop-color:#184f95}
+  html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [fill="#86b6ef"]{fill:#1c5cab}html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [stop-color="#86b6ef"]{stop-color:#1c5cab}
+  html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [fill="#6da7ec"]{fill:#256abf}html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [stop-color="#6da7ec"]{stop-color:#256abf}
+  html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [fill="#5598e7"]{fill:#2a78d6}html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [stop-color="#5598e7"]{stop-color:#2a78d6}
+  html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg rect[data-tip][fill="#2a78d6"]:not([fill-opacity]){fill:#5598e7}html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [stop-color="#2a78d6"]{stop-color:#5598e7}
+  html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [fill="#256abf"]{fill:#6da7ec}html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [stop-color="#256abf"]{stop-color:#6da7ec}
+  html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [fill="#1c5cab"]{fill:#86b6ef}html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [stop-color="#1c5cab"]{stop-color:#86b6ef}
+  html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [fill="#184f95"]{fill:#9ec5f4}html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [stop-color="#184f95"]{stop-color:#9ec5f4}
+  html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [fill="#104281"]{fill:#b7d3f6}html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [stop-color="#104281"]{stop-color:#b7d3f6}
+  html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [fill="#0d366b"]{fill:#cde2fb}html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg [stop-color="#0d366b"]{stop-color:#cde2fb}
+  /* 색 위 값 라벨(svg.py on_bg) — 바뀐 바탕색에서 대비 큰 쪽(흰/검정)으로 */
+  html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg text:is([data-bg="#2a78d6"],[data-bg="#eb6834"],[data-bg="#1baf7a"],[data-bg="#eda100"],[data-bg="#e87ba4"],[data-bg="#4a3aa7"],[data-bg="#e34948"],[data-bg="#5598e7"],[data-bg="#3987e5"],[data-bg="#256abf"],[data-bg="#1c5cab"],[data-bg="#184f95"],[data-bg="#104281"],[data-bg="#0d366b"]){fill:#0b0b0b}
+  html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg text:is([data-bg="#008300"],[data-bg="#cde2fb"],[data-bg="#b7d3f6"],[data-bg="#9ec5f4"],[data-bg="#86b6ef"],[data-bg="#6da7ec"]){fill:#ffffff}
 </style>
 </head>
 <body>

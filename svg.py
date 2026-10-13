@@ -78,6 +78,11 @@ def text_on(fill):
     return "#ffffff" if lum(fill) < 0.35 else INK
 
 
+def on_bg(fill):
+    """색 위에 얹은 값 라벨 표시 — 화면(ui.html)이 어두운 테마에서 바탕색에 맞춰 글자색을 고를 수 있게. 그림 모양은 같음"""
+    return f'data-bg="{fill}"'
+
+
 class Svg:
     def __init__(self, w, h, title):
         self.w, self.h, self.parts = w, h, []
@@ -382,7 +387,7 @@ def render_category(table, spec, w, h, data=None):
                 end = "top" if (s, v, a0, a1) is top else "none"
                 g.add(f'<path d="{bar_path(bx, ya + gap_top, bw, max(yb - ya - gap_top, 0.5), 4 if end == "top" else 0, end if end == "top" else "x")}" fill="{c}" {a}>{t}</path>')
                 if labels == "all" and yb - ya >= 16 and bw >= tw(vfmt(v), 10.5) + 4:
-                    g.text(bx + bw / 2, (ya + yb) / 2 + 4, vfmt(v), 10.5, text_on(c), "middle")
+                    g.text(bx + bw / 2, (ya + yb) / 2 + 4, vfmt(v), 10.5, text_on(c), "middle", extra=on_bg(c))
             if labels in ("auto", "all") and k == "col_stack" and up > 0 and n <= 16:
                 g.text(px0 + band * i + band / 2, sy(up) - 5, vfmt(up), 11, INK, "middle")
     elif is_area:
@@ -502,7 +507,7 @@ def _render_horizontal(g, spec, k, cats, series, lo, hi, ticks, step, unit, vtit
                 a, t = tip(cats[i], s["name"], vfmt(v) + (" " + unit if unit and unit != "%" else ""))
                 g.add(f'<path d="{bar_path(xa, by, max(xb - xa - (0 if last else 2), 0.5), bh, 4 if last else 0, "right" if last else "x")}" fill="{col}" {a}>{t}</path>')
                 if labels == "all" and xb - xa >= tw(vfmt(v), 10.5) + 8:
-                    g.text((xa + xb) / 2, by + bh / 2 + 4, vfmt(v), 10.5, text_on(col), "middle")
+                    g.text((xa + xb) / 2, by + bh / 2 + 4, vfmt(v), 10.5, text_on(col), "middle", extra=on_bg(col))
                 acc += v
             if labels in ("auto", "all") and acc > 0:
                 g.text(sx(acc) + 5, py0 + band * (i + .5) + 4, vfmt(acc), 11.5, INK)
@@ -555,7 +560,7 @@ def render_pie(table, spec, w, h):
             mid = (ang + a2) / 2
             rr = r * ((1 + hole) / 2 if hole else 0.64)
             lx, ly = p(mid, rr)
-            g.text(lx, ly + 4.5, f"{frac * 100:.0f}%" if frac >= 0.1 else f"{frac * 100:.1f}%", 12.5, text_on(col), "middle", 600)
+            g.text(lx, ly + 4.5, f"{frac * 100:.0f}%" if frac >= 0.1 else f"{frac * 100:.1f}%", 12.5, text_on(col), "middle", 600, on_bg(col))
         ang = a2
     if hole:
         g.text(cx, cy - 2, core.fmt(tot, dec) + ("%" if unit == "%" else ""), 20, INK, "middle", 600)
@@ -741,7 +746,7 @@ def render_heatmap(table, spec, w, h):
             g.add(f'<rect x="{x + 1:.1f}" y="{y + 1:.1f}" width="{max(cw - 2, .5):.1f}" height="{max(ch - 2, .5):.1f}" rx="3" fill="{col}" {a}>{t}</rect>')
             lbl = core.fmt(v, dec)
             if (spec.get("labels") or "auto") != "none" and cw >= tw(lbl, 11) + 8 and ch >= 18:
-                g.text(x + cw / 2, y + ch / 2 + 4, lbl, 11, text_on(col), "middle")
+                g.text(x + cw / 2, y + ch / 2 + 4, lbl, 11, text_on(col), "middle", extra=on_bg(col))
     gy1 = gy0 + ch * m
     x_cat_labels(g, cats, lambda c: gx0 + cw * (cats.index(c) + .5), cw, gy1 - 4, gx0, x1, xtitle)
     # 색 범례
