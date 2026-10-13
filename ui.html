@@ -67,6 +67,7 @@
   .series{display:flex;flex-direction:column;gap:4px;max-height:220px;overflow:auto}
   .series .s{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--fg);overflow-wrap:anywhere;min-width:0}.series .s input{flex:none}
   .series input[type=color]{width:30px;height:24px;padding:0;border:none;background:none}
+  .series .scr,.hint.scrhint{display:none}  /* 어두운 테마에서만: 화면 그래프 색 견본(●) — 아래 html[data-ag-theme$=dark] 규칙 */
   .note{font-size:12.5px;color:var(--warn);margin-top:6px}
   .fmt{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px;margin:10px 0}
   .fmt button{text-align:left;padding:10px 12px;line-height:1.45}
@@ -89,6 +90,8 @@
      색은 svg.py 의 고정 색(SURFACE·INK·INK2·MUTED·GRID·BASE·PAL·SEQ)을 속성 값으로 골라 바꾼다 — svg.py 색을 바꾸면 여기도.
      내보내기(SVG·PNG 저장, 문서)는 원래 문자열을 쓰므로 흰 종이 그대로. 포털 없이 실행·classic-light 는 아무것도 안 바뀜 */
   html[data-ag-theme$="dark"] :is(.card .pv,.bigpv){background:var(--card)}
+  html[data-ag-theme$="dark"] .series .scr:not(.same){display:inline-block;width:11px;height:11px;border-radius:50%;flex:none;margin-left:-3px;box-shadow:0 0 0 1px var(--ag-line-2)}
+  html[data-ag-theme$="dark"] .scrhint{display:block}
   html[data-ag-theme$="dark"] :is(.pv,.bigpv) svg{
     --pv-bg:var(--card);
     --c1:#3987e5;--c2:#d95926;--c3:#199e70;--c4:#c98500;--c5:#d55181;--c6:#008300;--c7:#9085e9;--c8:#e66767}  /* 계열색: dataviz 기준 팔레트의 어두운 바탕용 단계(같은 색상·순서) */
@@ -401,8 +404,10 @@ function openEdit(id, keepScroll) {
     <label>${isDual ? '왼쪽 축 열 (1~2개 권장)' : '값 열'} <span class="hint">(${c.group ? '그룹이 있으면 첫 열만 사용' : '체크한 열이 계열'})</span>
       <div class="series">${nums.map(n => `<span class="s"><input type="checkbox" data-y="${esc(n)}" ${ys.includes(n) ? 'checked' : ''}> ${esc(n)}</span>`).join('')}</div></label>
     <label>${isPie ? '조각 색' : '계열 표시·색'} <span class="hint">끄면 그래프에서 빠지고 색은 그대로 유지</span>
-      <div class="series">${colorNames.map((n, i) => `<span class="s"><input type="color" data-col="${i}" value="${(c.colors && c.colors[i]) || pal[i % pal.length]}">
-        ${isPie ? '' : `<input type="checkbox" data-hide="${esc(n)}" ${hidden.includes(n) ? '' : 'checked'}>`} ${esc(n)}</span>`).join('')}</div>
+      <span class="hint scrhint">왼쪽 칸 = 문서·내려받기에 들어가는 색(고른 색 그대로) · ● = 어두운 화면 그래프에서 보이는 색</span>
+      <div class="series">${colorNames.map((n, i) => { const col = (c.colors && c.colors[i]) || pal[i % pal.length], sc = SCREEN_COL[String(col).toLowerCase()];
+        return `<span class="s"><input type="color" data-col="${i}" value="${col}" title="문서·내려받기에 들어가는 색"><i class="scr${sc ? '' : ' same'}" data-scr="${i}" style="background:${sc || col}" title="어두운 화면 그래프에서는 이 색으로 보임 — 문서에는 ${col}"></i>
+        ${isPie ? '' : `<input type="checkbox" data-hide="${esc(n)}" ${hidden.includes(n) ? '' : 'checked'}>`} ${esc(n)}</span>`; }).join('')}</div>
       <button class="sm" id="b-palreset" style="align-self:flex-start">기본 색으로</button></label>
     <div class="row"><label>x 축 이름<input data-f="x_title" value="${esc(c.x_title ?? '')}" placeholder="(자동)"></label>
       <label>y 축 이름<input data-f="y_title" value="${esc(c.y_title ?? '')}" placeholder="(자동)"></label></div>
@@ -447,7 +452,10 @@ function openEdit(id, keepScroll) {
     const n = el.dataset.hide; c.hidden = (c.hidden || []).filter(v => v !== n); if (!el.checked) c.hidden.push(n); upd();
   });
   $$('#ctrl [data-col]').forEach(el => el.oninput = () => {
-    c.colors = c.colors || []; c.colors[+el.dataset.col] = el.value; upd();
+    c.colors = c.colors || []; c.colors[+el.dataset.col] = el.value;
+    const d = $(`#ctrl [data-scr="${el.dataset.col}"]`), sc = SCREEN_COL[el.value.toLowerCase()];
+    if (d) { d.classList.toggle('same', !sc); d.style.background = sc || el.value; d.title = `어두운 화면 그래프에서는 이 색으로 보임 — 문서에는 ${el.value}`; }
+    upd();
   });
   $('#b-palreset').onclick = () => { delete c.colors; upd(); setTimeout(() => openEdit(id, true), 200); };
   $('#e-pick').onchange = e => { togglePick(id, e.target.checked); $$(`[data-pick="${id}"]`).forEach(x => x.checked = e.target.checked); };
@@ -457,6 +465,8 @@ function openEdit(id, keepScroll) {
   };
   if (!keepScroll) $('#p-edit').scrollIntoView({block: 'start'});
 }
+// 어두운 테마 화면 그래프의 계열색(위 CSS --c1…--c8 과 같게): 문서 색(svg.py PAL) → 화면 색. 여기 없는 색(직접 고른 색)은 화면도 같은 색
+const SCREEN_COL = {'#2a78d6': '#3987e5', '#eb6834': '#d95926', '#1baf7a': '#199e70', '#eda100': '#c98500', '#e87ba4': '#d55181', '#4a3aa7': '#9085e9', '#e34948': '#e66767'};
 function levels(col) {
   if (!col) return [];
   const j = S.table.columns.findIndex(c => c.name === col); const out = [];
