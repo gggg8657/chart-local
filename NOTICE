@@ -7,7 +7,7 @@ chart-local
 
 연구·내부 시험용 프로토타입이다(배포·상업 서비스용 아님).
 
-Copyright (c) 2026 DongJu Kim (gggg8657) <gggg8657@gmail.com> — MIT License (LICENSE)
+Copyright (c) 2026 DongJu Kim (gggg8657) <gggg8657@gmail.com> — PolyForm Noncommercial License 1.0.0 (LICENSE)
 
 Third-party (동봉하지 않음 — setup.sh 가 pip 로 설치하거나 wheels/ 에서 설치):
   openpyxl — MIT License
@@ -21,9 +21,21 @@ Third-party (동봉하지 않음 — setup.sh 가 pip 로 설치하거나 wheels
 그래프 색·표시 규칙은 범주색 고정 순서(8색)·막대 두께/둥근 끝·2px 바탕색 틈·이중축 금지 등 일반적인 데이터 시각화 원칙을 따르며,
 SVG 렌더러는 이 패키지에서 새로 작성했습니다(외부 차트 라이브러리·CDN 없음). 샘플 데이터 3종은 가상의 값입니다.
 
-Files authored for this package (MIT): app.py, core.py, svg.py, export.py, samples.py, ui.html, selftest.py, setup.sh, README.md
+Files authored for this package (PolyForm Noncommercial 1.0.0): app.py, core.py, svg.py, export.py, samples.py, ui.html, selftest.py, setup.sh, README.md
 
 LLM (not bundled): called via an OpenAI-compatible API; default deployment is Ollama (https://github.com/ollama/ollama, MIT)
   serving Google Gemma 4 (gemma4:31b, Apache-2.0 — https://ai.google.dev/gemma/docs/gemma_4_license).
 
 화면 하단·메타데이터의 저작자 표기는 지우거나 바꾸지 마세요.
+
+License / 라이선스 (2026-10-13 변경: MIT → PolyForm Noncommercial 1.0.0)
+  이 저장소의 원저작물은 PolyForm Noncommercial License 1.0.0 을 따른다 (LICENSE, SPDX: PolyForm-Noncommercial-1.0.0,
+  https://polyformproject.org/licenses/noncommercial/1.0.0/).
+  비상업 목적(개인 연구·학습·시험, 교육기관·공공 연구기관·정부기관·비영리 단체 등)의 사용·수정·재배포는 허용하며,
+  상업적 이용은 저작자의 별도 허락이 필요하다.
+  이전 버전: 커밋 026f1f9 까지(2026-10-13 이전)의 버전을 MIT 로 받아 간 사본에는 MIT 가 계속 적용된다. 변경은 이후 버전에만 적용된다.
+  제3자 구성요소(동봉 파일·설치 의존성·모델·데이터)는 각자의 원래 라이선스를 그대로 따르며 이 변경의 영향을 받지 않는다
+  (THIRD_PARTY_NOTICES.md).
+  연구·내부 시험용 프로토타입이며 배포·상업 서비스용이 아니다.
+
+Required Notice: Copyright 2026 DongJu Kim (gggg8657)

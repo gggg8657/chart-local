@@ -43,4 +43,4 @@
 
 ## 이 저장소의 원저작물
 
-`app.py`, `core.py`, `svg.py`, `export.py`, `samples.py`, `ui.html`, `selftest.py`, `setup.sh`, `README.md` — DongJu Kim (gggg8657), MIT (`LICENSE`).
+`app.py`, `core.py`, `svg.py`, `export.py`, `samples.py`, `ui.html`, `selftest.py`, `setup.sh`, `README.md` — DongJu Kim (gggg8657), PolyForm Noncommercial 1.0.0 (`LICENSE`).
