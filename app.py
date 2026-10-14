@@ -486,4 +486,4 @@ if __name__ == "__main__":
         sys.exit(0)
     print(f"chart local → http://localhost:{PORT}  (llm={LLM_API} {LLM_BASE} {MODEL}, workspace={WS}, "
           f"hwpx={'kordoc' if export.hwpx_available() else '없음'})  {_SIG}")
-    ThreadingHTTPServer((os.environ.get("BIND", "0.0.0.0"), PORT), H).serve_forever()
+    ThreadingHTTPServer((os.environ.get("BIND", "127.0.0.1"), PORT), __import__("portal_auth").install(H, "chart-local")).serve_forever()
