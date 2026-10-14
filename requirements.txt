@@ -1,3 +1,4 @@
 openpyxl>=3.1
 python-pptx>=0.6.22
 python-docx>=1.1
+pillow>=12.3.0  # python-pptx 가 끌어오는 의존 — 12.3.0 미만은 이미지 디코더 취약점
