@@ -25,6 +25,17 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import portal_auth  # 포털 서명 확인 관문·오류 문장 정리(원본 agent-page-portal/sdk/portal_auth.py)
 
+try:
+    from zoneinfo import ZoneInfo
+    KST = ZoneInfo("Asia/Seoul")
+except Exception:  # tzdata 없는 환경 — 한국은 일광절약시간 없음
+    KST = datetime.timezone(datetime.timedelta(hours=9), "KST")
+
+
+def now_kst():
+    """내보낸 파일 이름의 시각은 한국 시간 — 서버는 UTC"""
+    return datetime.datetime.now(KST)
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 import core  # noqa: E402
@@ -446,7 +457,7 @@ def do_export(req, ws=WS):
     doc_title = (req.get("title") or rec.get("title") or "그래프").strip()[:80]
     d = hdir(rec["id"], ws)
     os.makedirs(d, exist_ok=True)
-    fname = f"{safe_name(doc_title)}_{datetime.datetime.now():%m%d_%H%M%S}.{fmt_}"
+    fname = f"{safe_name(doc_title)}_{now_kst():%m%d_%H%M%S}.{fmt_}"
     path = os.path.join(d, fname)
     report = export.BUILDERS[fmt_](table, specs, path, doc_title=doc_title, include_table=bool(req.get("include_table", True)))
     ver = export.verify(path)
