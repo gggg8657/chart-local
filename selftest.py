@@ -794,11 +794,12 @@ try:
                                      ("budget", "heatmap"), ("stock_daily", "candlestick")]]
     pdir = os.path.join(TMP, "pal")
     os.makedirs(pdir, exist_ok=True)
-    fmts = ["xlsx", "pptx", "docx"] + (["hwpx"] if export.hwpx_available() else [])
+    fmts_all = ["xlsx", "pptx", "docx"] + (["hwpx"] if export.hwpx_available() else [])
+    FULL = ("default", "okabe", "print", "mono")   # 4형식 전부(HWPX 는 kordoc 이 느려 이 넷만) · 나머지는 XLSX·PPTX — 기동 때 selftest 시간
     for pp in palettes.PALETTES:
         pid = pp["id"]
         specs_p = [dict(c, palette=pid) for c in exp_specs]
-        for fm in fmts:
+        for fm in (fmts_all if pid in FULL else ["xlsx", "pptx"]):
             path = os.path.join(pdir, f"{pid}.{fm}")
             if fm == "hwpx":
                 try:
