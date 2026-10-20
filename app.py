@@ -28,6 +28,7 @@ import portal_auth  # 포털 서명 확인 관문·오류 문장 정리(원본 a
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 import core  # noqa: E402
+import fin  # noqa: E402
 import export  # noqa: E402
 import rerank  # noqa: E402
 import samples  # noqa: E402
@@ -367,6 +368,13 @@ def do_render(req):
             note = core.category_data(table, spec)["note"]
         except Exception:
             pass
+    if spec["kind"] in fin.FIN_KINDS:
+        try:
+            F = fin.compute(table, spec)
+            if F and F["opt"]["notes"]:
+                note = " · ".join([x for x in [note] + F["opt"]["notes"] if x])
+        except Exception:
+            pass
     return {"svg": svg.render(table, spec, int(req.get("w") or 720), int(req.get("h") or 440)), "note": note}
 
 
@@ -419,7 +427,11 @@ def meta():
             "formats": [{"id": k, "label": v, "ok": k != "hwpx" or export.hwpx_available()} for k, v in FORMATS.items()],
             "model": MODEL, "palette": svg.PAL,
             "rerank": {"max_candidates": rerank.MAX_CANDS, "max_extra": rerank.MAX_EXTRA, "rate_n": rerank.RATE_N, "rate_s": rerank.RATE_S},
-            "kind_colors": {"waterfall": list(svg.WF_COLS), "candlestick": [svg.UP_COL, svg.DOWN_COL]}}
+            "kind_colors": {"waterfall": list(svg.WF_COLS), "candlestick": [svg.UP_COL, svg.DOWN_COL], "ohlc": [svg.UP_COL, svg.DOWN_COL]},
+            "updown_colors": {"kr": [svg.UP_COL, svg.DOWN_COL], "intl": [svg.UP_INTL, svg.DOWN_INTL]},
+            "fin": {"ma_default": fin.MA_DEFAULT, "ma_max": fin.MA_MAX, "panels": list(fin.PANELS), "bb": {"period": 20, "k": 2},
+                    "macd": [12, 26, 9], "rsi": 14, "vprofile_bins": 24, "ma_colors": list(svg.MA_COLS)},
+            "trend_kinds": sorted(core.TREND_KINDS)}
 
 
 # ── HTTP ────────────────────────────────────────────────────────────────

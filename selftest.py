@@ -146,7 +146,8 @@ try:
             v = export.verify(p)
             check(v["ok"], f"{name}.{fmt} 검사 실패: {v['errors']}")
             nat = sum(1 for r in rep if "native" in r["modes"] or "hwp-native" in r["modes"])
-            nonnat = sum(1 for c in cands if c["kind"] in ({"heatmap", "dual", "box"} | export.HWP_IMAGE_KINDS if fmt == "hwpx" else {"heatmap"} | export.IMAGE_KINDS))
+            nonnat = sum(1 for c in cands if c["kind"] in ({"heatmap", "dual", "box"} | export.HWP_IMAGE_KINDS if fmt == "hwpx" else {"heatmap"} | export.IMAGE_KINDS)
+                         or (fmt == "hwpx" and core.trend_mode(c)))  # 막대 추세선은 한글에서 그림
             check(nat >= len(cands) - max(2, nonnat) and v["charts"] >= nat - sum(1 for c in cands if c["kind"] == "sparkline"),
                   f"{name}.{fmt} 네이티브 {nat}/{len(cands)} 차트 {v['charts']}")
             check(all(r["label"] for r in rep), "형식 보고")
@@ -343,6 +344,183 @@ try:
         sv = svg.render(tb, dict(sp, hidden=list(sp.get("ys") or [])[:1], legend="bottom", labels="all", sort="desc"))
         minidom.parseString(sv.encode())
         check("그릴 수 없음" not in sv, (k, "숨김·정렬"))
+
+    # 5-2) 주가 지표 — 손으로 계산한 값과 맞춤 (fin.py)
+    import fin
+    import rerank
+    close_ = lambda a, b, tol=1e-9: a is not None and b is not None and abs(a - b) <= tol * max(1, abs(b))
+    check(fin.sma([1, 2, 3, 4, 5], 3) == [None, None, 2, 3, 4], "SMA 3")
+    check(fin.sma([1, None, 3, 4, 5], 2) == [None, None, None, 3.5, 4.5], "SMA 창 안 빈 값")
+    sd = fin.rolling_std([2, 4, 4, 4, 5, 5, 7, 9], 8)
+    check(sd[:7] == [None] * 7 and close_(sd[7], 2.0), ("모집단 표준편차 = 2", sd))
+    bm, bu, bl = fin.bollinger([2, 4, 4, 4, 5, 5, 7, 9], 8, 2)
+    check(close_(bm[7], 5) and close_(bu[7], 9) and close_(bl[7], 1) and bu[6] is None, "볼린저 5 ± 2×2")
+    e3 = fin.ema(list(range(1, 11)), 3)  # SMA 시작 (1+2+3)/3 = 2, α = 0.5 → 직선 입력이면 늘 값 − 1
+    check(e3[:2] == [None, None] and close_(e3[2], 2) and close_(e3[9], 9), ("EMA 3", e3))
+    ml, sg, hs = fin.macd(list(range(40)))  # 직선 입력: EMA_n = x − (n−1)/2 → MACD = 12.5 − 5.5 = 7, 시그널 7, 히스토그램 0
+    check(ml[24] is None and close_(ml[25], 7) and close_(ml[39], 7) and sg[32] is None and close_(sg[33], 7) and close_(hs[39], 0),
+          ("MACD 직선", ml[24:27], sg[32:35]))
+    ml, sg, hs = fin.macd([1, 3, 2, 4, 3, 5], 2, 3, 2)  # 손 계산: MACD5 = 10/27, 시그널5 = 47/162, 히스토그램 = 13/162
+    check(close_(ml[2], 0) and close_(ml[5], 10 / 27) and close_(sg[3], 1 / 6) and close_(sg[5], 47 / 162) and close_(hs[5], 13 / 162),
+          ("MACD 손 계산", ml, sg, hs))
+    wil = [44.34, 44.09, 44.15, 43.61, 44.33, 44.83, 45.10, 45.42, 45.84, 46.08, 45.89, 46.03, 45.61, 46.28, 46.28, 46.00]
+    rv = fin.rsi(wil, 14)  # 첫 평균 상승 3.34/14, 하락 1.40/14 → RSI 100×3.34/4.74 · 다음: 상승 3.34×13/196, 하락 (1.3+0.28)/14
+    check(rv[13] is None and close_(rv[14], 100 * 3.34 / 4.74, 1e-9) and close_(rv[15], 100 * 43.42 / 65.54, 1e-9), ("와일더 RSI", rv[13:]))
+    check(fin.rsi([5] * 20, 14)[19] == 50 and fin.rsi(list(range(20)), 14)[19] == 100, "RSI 변화 없음 50 · 오르기만 100")
+    vp_ = fin.volume_profile([10, 5], [0, 5], [100, 50], bins=4)  # 0~10 을 4칸: 첫 기간 25씩, 둘째(5 한 점) 3번째 칸에 50
+    check(vp_["vols"] == [25, 25, 75, 25] and vp_["poc"] == 2 and vp_["va"] == (1, 3), ("매물대 손 계산", vp_))
+    op_ = fin.options({"ma": [5, 20, 60, 120, "x"], "panels": ["volume", "macd", "rsi"], "bb": {"period": 40}}, 30, False)
+    check(op_["ma"] == [5, 20] and op_["panels"] == ["rsi"] and op_["bb"] is None and len(op_["notes"]) == 4, op_)
+    check(fin.options({}, 30, True)["panels"] == ["volume"] and fin.options({"panels": []}, 30, True)["panels"] == [], "예전 캔들 = 거래량 칸")
+    tdl = smp["stock_daily"]
+    check(len(tdl["rows"]) >= 150 and "가상 데이터" in tdl["title"], "가상 일봉 샘플")
+    rd = core.recommend(tdl)
+    fk_ = lambda c: (c["kind"], tuple(c.get("ma") or []), bool(c.get("bb")), tuple(c.get("panels") or []), bool(c.get("vprofile")))
+    got = {fk_(c) for c in rd}
+    check(("candlestick", (5, 20, 60, 120), False, ("volume",), False) in got and any(g[2] for g in got) and any(g[4] for g in got)
+          and any("macd" in g[3] and "rsi" in g[3] for g in got) and any(g[0] == "ohlc" for g in got), sorted(got))
+    check(rec["stock"][0]["kind"] == "candlestick" and not rec["stock"][0].get("ma") and not any(c.get("bb") for c in rec["stock"]),
+          "22행 표: 기존 캔들 맨 앞, 볼린저(25행 미만) 없음")
+    full = dict(rd[0], ma=[5, 20, 60, 120], bb={"period": 20, "k": 2}, panels=["volume", "macd", "rsi"], vprofile={"bins": 24})
+    full["title"] = core.default_title(tdl, full)
+    Ff = fin.compute(tdl, full)
+    check(Ff["ma"][3][1][:119] == [None] * 119 and Ff["ma"][3][1][119] is not None, "이동평균 120: 앞 119칸 빈칸")
+    sv = svg.render(tdl, full)
+    minidom.parseString(sv.encode())
+    hh = int(re.search(r'height="(\d+)"', sv).group(1))
+    check(hh > 440 and all(x in sv for x in ("MACD (12, 26, 9)", "RSI (14", "매물대", "POC", "이동평균 120", "볼린저 밴드 (20, 2σ)", "<polygon"))
+          and svg.UP_COL in sv, ("주가 SVG", hh))
+    svi = svg.render(tdl, dict(full, kind="ohlc", colors_updown="intl"))
+    check(svg.UP_INTL in svi and svg.DOWN_INTL in svi and svi.count('stroke="' + svg.UP_INTL + '" stroke-width') > 10, "OHLC 국제 색")
+    check(svg.candle_colors({"colors_updown": "intl", "colors": ["#123456"]}) == ("#123456", svg.DOWN_INTL), "직접 고른 색이 관례보다 먼저")
+    if OUT:
+        open(os.path.join(OUT, "fin-full.svg"), "w").write(sv)
+        open(os.path.join(OUT, "fin-ohlc-intl.svg"), "w").write(svi)
+    for fmt in ("xlsx", "pptx", "docx") + (("hwpx",) if export.hwpx_available() else ()):
+        p = os.path.join(outdir, f"fin.{fmt}")
+        rep = export.BUILDERS[fmt](tdl, [full, dict(full, kind="ohlc", vprofile=None, bb=None, title="OHLC")], p, doc_title="주가 지표")
+        v = export.verify(p)
+        check(v["ok"], (fmt, v["errors"]))
+        if fmt == "hwpx":
+            check(all(r["modes"] == [img] for r in rep), (fmt, rep))
+            continue
+        check(all(r["modes"] == ["native"] for r in rep) and v["charts"] == 9, (fmt, [r["modes"] for r in rep], v["charts"]))
+        zz = zipfile.ZipFile(p)
+        names_ = sorted((n for n in zz.namelist() if re.search(r"charts/chart\d+\.xml$", n)), key=lambda n: int(re.search(r"(\d+)\.xml", n).group(1)))
+        roots = [ET.fromstring(zz.read(n)) for n in names_]
+        tags_ = [[e.tag.split("}")[1] for e in r.find(f"{CN}chart").find(f"{CN}plotArea") if e.tag.endswith("Chart")] for r in roots]
+        check(["stockChart", "lineChart"] in tags_ and ["barChart", "lineChart"] in tags_ and ["lineChart"] in tags_, (fmt, tags_))
+        pr = roots[tags_.index(["stockChart", "lineChart"])]
+        sc = pr.find(f".//{CN}stockChart")
+        check(len(sc.findall(f"{CN}ser")) == 4 and sc.find(f"{CN}upDownBars") is not None and
+              len(pr.find(f".//{CN}lineChart").findall(f"{CN}ser")) == 7 and pr.find(f".//{CN}legend") is None
+              and len(pr.findall(f".//{CN}valAx")) == 2, (fmt, "가격 차트: 주식형 주 축 + 선 숨은 보조 축, 범례 없음(색은 제목)"))
+        oh = [r for r, t_ in zip(roots, tags_) if t_ == ["stockChart", "lineChart"]][1]
+        check(oh.find(f".//{CN}upDownBars") is None and len(oh.findall(f".//{CN}stockChart/{CN}ser/{CN}dPt")) > 100, (fmt, "OHLC 표식"))
+        if fmt == "xlsx":
+            wbz = openpyxl.load_workbook(p)
+            wz = wbz["그림1"]
+            hd = {wz.cell(4, j).value: j for j in range(1, wz.max_column + 1) if wz.cell(4, j).value}
+            fx = lambda nm, i: str(wz.cell(5 + i, hd[nm]).value)
+            check(fx("이동평균 5", 4) == "=AVERAGE(E5:E9)" and fx("이동평균 5", 3) == "=NA()" and "STDEVP(E5:E24)" in fx("볼린저 상단 (+2σ)", 19)
+                  and "+2/(12+1)*(" in fx("EMA 12", 20) and fx("시그널", 33).startswith("=AVERAGE(") and "100-100/(1+" in fx("RSI (14)", 30)
+                  and "SUMPRODUCT(" in str(wz.cell(5, hd["가격 구간"] + 3).value),
+                  "XLSX 지표 = 수식")
+            check(fx("시가", 0) == "='데이터'!$B$2", "가격 칸 = 데이터 시트 참조")
+            wv = openpyxl.load_workbook(p, data_only=True)["그림1"]  # 저장한 계산값(<v>) — 열자마자 보이는 값
+            cv = lambda nm, i: wv.cell(5 + i, hd[nm]).value
+            n_ = len(tdl["rows"])
+            check(close_(cv("이동평균 120", n_ - 1), Ff["ma"][3][1][-1]) and cv("이동평균 120", 118) == "#N/A" and close_(cv("RSI (14)", n_ - 1), Ff["rsi"][-1])
+                  and close_(cv("시그널", n_ - 1), Ff["macd"][1][-1]) and close_(cv("볼린저 하단 (−2σ)", n_ - 1), Ff["bb"][2][-1])
+                  and close_(wv.cell(5 + Ff["vp"]["poc"], hd["가격 구간"] + 3).value, Ff["vp"]["vols"][Ff["vp"]["poc"]])
+                  and wv.cell(5 + Ff["vp"]["poc"], hd["가격 구간"] + 4).value == "POC", "XLSX 수식 계산값 = 파이썬 값")
+            check(b"<trendline name" not in b"".join(zz.read(n) for n in names_), "추세선 이름 요소")
+        else:
+            # PPTX·DOCX 내장 워크북 = 계산값
+            check(b"MACD" in b"".join(zz.read(n) for n in names_), "MACD 계열")
+    # LLM 제안 검증: 이동평균 창 ≤ 행 수, 볼린저 행 ≥ 20, MACD 행 ≥ 34, 거래량 칸·매물대는 거래량 열
+    ohlc_ = ["시가", "고가", "저가", "종가"]
+    base_ = {"kind": "candlestick", "x": "일자", "ys": ohlc_, "volume": "거래량"}
+    sp_ok = rerank.check_spec(tdl, dict(base_, ma=[20, 5], bb=True, panels=["rsi", "macd", "volume"], vprofile=True))
+    check(sp_ok["ma"] == [5, 20] and sp_ok["panels"] == ["volume", "macd", "rsi"] and sp_ok["bb"]["period"] == 20 and sp_ok["vprofile"], sp_ok)
+    check(rerank.check_spec(tdl, dict(base_, kind="ohlc"))["kind"] == "ohlc", "OHLC 제안")
+    for bad, why in ((dict(base_, ma=[200]), "창 > 행"), (dict(base_, ma=[True]), "창 형식"), (dict(base_, ys=ohlc_[::-1]), "순서"),
+                     (dict(base_, volume=None, vprofile=True), "매물대 거래량"), (dict(base_, volume=None, panels=["volume"]), "거래량 칸")):
+        try:
+            rerank.check_spec(tdl, bad)
+            check(False, ("통과하면 안 됨", why))
+        except ValueError:
+            check(True, why)
+    for bad in (dict(base_, panels=["macd"]), dict(base_, bb={"period": 30})):
+        try:
+            rerank.check_spec(smp["stock"], dict(bad, x="일자"))
+            check(False, ("22행 MACD·볼린저 통과", bad))
+        except ValueError:
+            check(True, "짧은 표 지표 거름")
+    sp_ai, sv_ai = rerank.validate_extra(tdl, dict(base_, ma=[5, 20], panels=["volume", "rsi"]))
+    check("RSI (14" in sv_ai and rerank.key_of(sp_ai) != rerank.key_of(rd[0]), "AI 제안 주가 지표 그려 봄 · 기존 캔들과 다른 후보")
+
+    # 5-3) 디지타이저 표: '1월…12월' 범주 열 = 기간(숫자 1 + 단위 '월' 아님), 값이 모두 빈 열은 뺌 → 묶은 막대 + 추세선
+    MUS = ("﻿범주,팝 음악 (상대값),재즈 음악 (상대값),록 음악 (상대값),막대 끝(합계)\r\n" +
+           "".join(f"{m}월,{a},{b},{c},\r\n" for m, a, b, c in [
+               (1, 90.2492, 46.4286, 23.8095), (2, 42.362, 91.3475, 50.9287), (3, 42.5139, 90.7738, 68.6048), (4, 42.2619, 110.417, 38.93),
+               (5, 24.1071, 46.4286, 54.9168), (6, 68.0504, 49.6806, 38.9357), (7, 68.75, 79.7619, 15.1786), (8, 119.345, 85.8247, 64.4658),
+               (9, 24.1071, 68.7122, 88.6905), (10, 68.0906, 106.25, 46.4286), (11, 33.631, 64.5833, 78.7932), (12, 94.921, 55.6967, 26.7857)]))
+    tm, nm_ = core.normalize(core.read_csv_bytes(MUS.encode("utf-8")))
+    cm = {c["name"]: c for c in tm["columns"]}
+    check(cm["범주"]["type"] == "date" and "막대 끝" not in cm and cm["팝 음악"]["unit"] == "상대값" and any("빈 열" in x for x in nm_), (tm["columns"], nm_))
+    wbm2 = openpyxl.Workbook()
+    wbm2.active.title = "데이터"
+    for line in MUS.lstrip("﻿").strip().split("\r\n"):
+        wbm2.active.append([core.num(x) if core.num(x) is not None and not x.endswith("월") else (x or None) for x in line.split(",")])
+    for nm2 in ("막대 조각", "보정"):
+        wbm2.create_sheet(nm2).append(["x", 1])
+    bio = io.BytesIO()
+    wbm2.save(bio)
+    rows_, _ = core.read_xlsx(bio.getvalue(), "데이터")
+    tx, _ = core.normalize(rows_)
+    for tt in (tm, tx):
+        rm = core.recommend(tt)
+        check(any(c["kind"] == "col_group" and c["x"] == "범주" and c["ys"] == ["팝 음악", "재즈 음악", "록 음악"] and not c.get("trend") for c in rm)
+              and any(c["kind"] == "col_group" and c.get("trend") == "linear" for c in rm), [(c["kind"], c.get("x"), c.get("trend")) for c in rm])
+    for txt, typ_ in (("제품\t판매\n3개\t10\n5개\t20\n7개\t30", "num"), ("보관\t값\n3일\t1\n7일\t2\n10일\t3", "num"),
+                      ("주\t값\n1주차\t1\n2주차\t2\n3주차\t3", "date"), ("분기\t값\n1분기\t1\n2분기\t2\n3분기\t3", "date"),
+                      ("구분\t값\nQ1\t1\nQ2\t2\nQ3\t3", "date")):
+        check(core.normalize(core.read_text(txt))[0]["columns"][0]["type"] == typ_, (txt, typ_))
+    # 추세선 값: 직선 = 최소제곱(x = 1…n), 이동평균 = 앞 n 개 평균
+    check(all(close_(a, b) for a, b in zip(core.trend_values([1, 3, 2, 4], "linear"), [1.3, 2.1, 2.9, 3.7])), "직선 추세 손 계산(기울기 0.8, 절편 0.5)")
+    check(core.trend_values([3, 6, 9, 12], "ma", 3) == [None, None, 6, 9], "이동평균 추세")
+    spm = next(c for c in core.recommend(tm) if c["kind"] == "col_group" and not c.get("trend"))
+    sv = svg.render(tm, dict(spm, trend="linear"))
+    check(sv.count('stroke-dasharray="6 4"') == 3 and "팝 음악 추세" in sv, "묶은 막대 추세선 3")
+    check(svg.render(tm, dict(spm, kind="col_stack", trend="ma", trend_n=3)).count('stroke-dasharray="6 4"') == 1, "누적 막대 합계 추세 1")
+    check(svg.render(tm, dict(spm, kind="bar", ys=["팝 음악"], trend="ma", trend_n=3)).count('stroke-dasharray="6 4"') == 1, "가로 막대 추세")
+    check('stroke-dasharray="6 4"' not in svg.render(tm, dict(spm, kind="line", trend="linear")), "꺾은선에는 막대 추세선 없음")
+    tspecs = [dict(spm, trend="linear", title="직선"), dict(spm, kind="col_stack", trend="ma", trend_n=3, title="누적"),
+              dict(spm, kind="col", ys=["팝 음악"], trend="ma", trend_n=4, title="이동평균")]
+    for fmt in ("xlsx", "pptx", "docx") + (("hwpx",) if export.hwpx_available() else ()):
+        p = os.path.join(outdir, f"trend.{fmt}")
+        rep = export.BUILDERS[fmt](tm, tspecs, p, doc_title="추세선")
+        v = export.verify(p)
+        check(v["ok"] and all(r["modes"] == ([img] if fmt == "hwpx" else ["native"]) for r in rep), (fmt, v["errors"], [r["modes"] for r in rep]))
+        if fmt == "hwpx":
+            continue
+        zz = zipfile.ZipFile(p)
+        xs_ = [zz.read(n).decode() for n in sorted(n for n in zz.namelist() if re.search(r"charts/chart\d+\.xml$", n))]
+        allx = "".join(xs_)
+        check(allx.count("trendlineType") == 4 and allx.count('movingAvg') == 1 and 'period val="4"' in allx and ("합계 추세" in allx or fmt == "xlsx")
+              and sum("lineChart" in x and "barChart" in x for x in xs_) == 1, (fmt, "추세선 XML"))
+        if fmt == "xlsx":
+            fs_ = " ".join(str(c.value) for row in openpyxl.load_workbook(p)["그림2"].iter_rows() for c in row if c.value is not None)
+            check("=SUM(B5:D5)" in fs_ and "=AVERAGE(F5:F7)" in fs_, "누적 합계 추세 = 수식")
+    check(rerank.check_spec(tm, dict(spm, trend="ma", trend_n=3))["trend_n"] == 3, "추세선 제안 통과")
+    for bad in (dict(spm, kind="scatter", x="팝 음악", ys=["록 음악"], trend="linear"), dict(spm, trend="ma", trend_n=20),
+                dict(spm, kind="line", trend="linear")):
+        try:
+            rerank.check_spec(tm, bad)
+            check(False, ("추세선 통과하면 안 됨", bad))
+        except ValueError:
+            check(True, "추세선 거름")
 
     # 6) LLM 숫자 거르기 (가짜 LLM)
     orig = app.llm

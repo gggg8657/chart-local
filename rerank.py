@@ -16,6 +16,7 @@ import threading
 import time
 
 import core
+import fin
 import export
 import svg
 
@@ -32,7 +33,8 @@ DELIM = "<<<TABLE_DATA>>>", "<<<END_TABLE_DATA>>>"
 
 # 종류별 한 줄 쓰임(프롬프트용) — KINDS 와 키가 같아야 함(selftest 가 확인)
 USAGE = {
-    "col": "범주·기간별 값 하나 크기 비교 (범주 ≤24)",
+    "col": "범주·기간별 값 하나 크기 비교 (범주 ≤24). 막대 종류(col·col_group·bar·bar_group·누적)는 x 가 기간이면 "
+           "trend(linear 최소제곱 직선 | ma 이동평균, trend_n 창)로 추세선을 얹을 수 있음",
     "bar": "항목 이름이 길거나 많을 때 크기순 비교 (≤30)",
     "col_group": "범주마다 계열 2~4개 나란히",
     "bar_group": "이름이 긴 범주마다 계열 2~4개 나란히",
@@ -53,7 +55,9 @@ USAGE = {
     "dual": "단위가 다른 두 묶음: 왼쪽 축 막대 + 오른쪽 축(y2) 꺾은선",
     "radar": "항목 3~12개를 축으로 놓고 계열 1~5개 모양(강점·약점) 비교 — 점수·평가",
     "sparkline": "시간축 + 계열(또는 그룹) 여러 개를 작은 추세선으로 나란히",
-    "candlestick": "시가·고가·저가·종가 4열(그 순서)이 있을 때만",
+    "candlestick": "시가·고가·저가·종가 4열(그 순서)이 있을 때만. 선택: ma(이동평균 창 목록, 각 ≤ 행 수), bb(볼린저, 행 ≥20), "
+                   "panels(volume·macd·rsi — volume 은 거래량 열 필요, macd 는 행 ≥34, rsi 는 행 ≥15), vprofile(매물대, 거래량 열 필요)",
+    "ohlc": "캔들과 같은 4열 — 몸통 없이 세로선 + 시가·종가 눈금(OHLC 막대). 캔들과 같은 선택 항목",
     "waterfall": "증감(양·음 섞임)이 쌓여 끝값에 이르는 과정",
     "funnel": "단계마다 줄어드는 값(전환) — 3~10단계, 양수",
     "bubble": "숫자 x·y + 원 크기(size, 양수 열) 세 값",
@@ -79,7 +83,7 @@ NCAT = {"pie": (2, 6), "doughnut": (2, 6), "semi_doughnut": (2, 6), "funnel": (3
         "bar_group": (2, 30), "bar_stack": (2, 30), "col": (2, 40), "col_group": (2, 24), "col_stack": (2, 40),
         "col_stack100": (2, 40), "heatmap": (2, 60), "dual": (2, 40), "stack_line": (2, 40), "panels": (2, 5000),
         "line": (2, 5000), "area": (2, 5000), "area_stack": (2, 5000), "index": (2, 5000), "sparkline": (3, 5000),
-        "step": (3, 5000), "candlestick": (3, 5000)}
+        "step": (3, 5000), "candlestick": (3, 5000), "ohlc": (3, 5000)}
 SORTABLE = {"col", "bar", "col_group", "bar_group", "col_stack", "bar_stack", "lollipop", "dumbbell", "bullet"}
 _BAD_RENDER = ("그릴 수 없음", "표시할 값이 없습니다", "양수 값이 없습니다")
 
@@ -159,19 +163,26 @@ def brief(table):
 def cand_line(c):
     ys = ", ".join(clean(y) for y in (c.get("ys") or []))
     extra = "".join(f" · {k}={clean(c[k])}" for k in ("group", "y2", "target", "volume", "size") if c.get(k))
+    fx = fin.describe(c) if c.get("kind") in fin.FIN_KINDS else ""
+    extra += f" · 지표: {fx}" if fx else ""
+    extra += f" · 추세선: {core.trend_label(c)}" if core.trend_mode(c) else ""
     why = clean(c.get("why") or "", 120)
     return f"{c['id']}: {core.KINDS[c['kind']]} · x={clean(c.get('x')) if c.get('x') else '-'} · y={ys}{extra} · 규칙 점수 {int(c.get('score') or 0)} — 규칙 이유: {why}"
 
 
 def key_of(sp):
     ys = sp.get("ys") or []
-    return (sp.get("kind"), sp.get("x") or None, tuple(ys if sp.get("kind") == "candlestick" else sorted(ys)), sp.get("group") or None)
+    fk = repr([sp.get(k) or None for k in fin.FIN_KEYS]) if sp.get("kind") in fin.FIN_KINDS else ""
+    if core.trend_mode(sp):
+        fk += f"trend={sp.get('trend')}:{sp.get('trend_n') or ''}"
+    return (sp.get("kind"), sp.get("x") or None, tuple(ys if sp.get("kind") in fin.FIN_KINDS else sorted(ys)), sp.get("group") or None, fk)
 
 
 def signature(table, cands):
     """이력에 저장한 AI 결과가 지금 표·후보와 같은지 — 표 전체 + 후보 정체(id·종류·열)"""
     ident = [[c.get("id"), c.get("kind"), c.get("x"), c.get("ys"), c.get("group"), c.get("y2"), c.get("target"), c.get("volume"),
-              c.get("size")] for c in cands]
+              c.get("size")] + ([{k: c[k] for k in fin.FIN_KEYS if c.get(k) not in (None, [], {})}] if any(c.get(k) for k in fin.FIN_KEYS) else [])
+             for c in cands]
     blob = json.dumps({"t": {"c": table["columns"], "r": table["rows"], "title": table.get("title", "")}, "k": ident},
                       ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(blob.encode()).hexdigest()[:32]
@@ -238,6 +249,10 @@ def schema(table, cands):
             "properties": {"why": {"type": "string", "maxLength": 140}, "kind": {"type": "string", "enum": list(core.KINDS)}, "x": col,
                            "ys": {"type": "array", "items": {"type": "string", "enum": names}, "minItems": 1, "maxItems": 8},
                            "group": col, "y2": col, "target": col, "volume": col, "size": col, "label": col,
+                           "ma": {"type": "array", "items": {"type": "integer", "minimum": 2, "maximum": fin.MA_MAX}, "maxItems": 6},
+                           "bb": {"type": "boolean"}, "panels": {"type": "array", "items": {"type": "string", "enum": list(fin.PANELS)}, "maxItems": 3},
+                           "vprofile": {"type": "boolean"},
+                           "trend": {"type": "string", "enum": ["none", "linear", "ma"]}, "trend_n": {"type": "integer", "minimum": 2, "maximum": 24},
                            "sort": {"type": "string", "enum": ["none", "desc", "asc"]}}}},
     }}
 
@@ -309,6 +324,40 @@ def good_reason(text, table, safe):
     return s
 
 
+def check_fin(raw, n, has_vol):
+    """캔들·OHLC 선택 항목 검사: 이동평균 창 ≤ 행 수, 볼린저 행 ≥ 기간, 거래량 칸·매물대는 거래량 열, MACD 행 ≥ 34, RSI 행 ≥ 15"""
+    out = {}
+    ma = raw.get("ma")
+    if ma not in (None, [], False):
+        if not isinstance(ma, list) or not all(isinstance(w, int) and not isinstance(w, bool) and 2 <= w <= fin.MA_MAX for w in ma):
+            raise ValueError("이동평균 창이 맞지 않음")
+        if any(w > n for w in ma):
+            raise ValueError(f"이동평균 창이 행 수({n})보다 김")
+        out["ma"] = sorted(set(ma))
+    bb = raw.get("bb")
+    if bb:
+        p_ = (bb.get("period") if isinstance(bb, dict) else None) or 20
+        if not isinstance(p_, int) or isinstance(p_, bool) or not 2 <= p_ <= 200 or n < p_:
+            raise ValueError("볼린저 밴드는 행이 기간(20) 이상이어야 함")
+        out["bb"] = {"period": p_, "k": 2}
+    pn = raw.get("panels")
+    if pn not in (None, []):
+        if not isinstance(pn, list) or any(p not in fin.PANELS for p in pn):
+            raise ValueError("지표 칸 이름이 맞지 않음")
+        if "volume" in pn and not has_vol:
+            raise ValueError("거래량 칸에는 거래량 열(volume) 필요")
+        if "macd" in pn and n < 34:
+            raise ValueError("MACD 는 행이 34개 이상")
+        if "rsi" in pn and n < 15:
+            raise ValueError("RSI 는 행이 15개 이상")
+        out["panels"] = [p for p in fin.PANELS if p in pn]
+    if raw.get("vprofile"):
+        if not has_vol:
+            raise ValueError("매물대에는 거래량 열(volume) 필요")
+        out["vprofile"] = {"bins": 24, "va": True}
+    return out
+
+
 def check_spec(table, raw):
     """LLM 제안 하나 → 정리된 명세. 맞지 않으면 ValueError(한국어 이유). 그리기·문서 블록 시험은 validate_extra 에서"""
     if not isinstance(raw, dict):
@@ -364,7 +413,7 @@ def check_spec(table, raw):
     # 종류별 열 조건
     if k in ONE_Y:
         sp["ys"] = ys = ys[:1]
-    if k == "candlestick":
+    if k in fin.FIN_KINDS:
         ohlc, vol = core.find_ohlc(table)
         if not ohlc or ys != ohlc:
             raise ValueError("시가·고가·저가·종가 4열이 그 순서로 있어야 함")
@@ -372,6 +421,7 @@ def check_spec(table, raw):
             if volume in ohlc:
                 raise ValueError("거래량 열이 맞지 않음")
             sp["volume"] = volume
+        sp.update(check_fin(raw, n, bool(volume)))
     if k == "dual":
         if not y2 or y2 in ys:
             raise ValueError("오른쪽 축 열(y2) 필요")
@@ -450,6 +500,21 @@ def check_spec(table, raw):
             raise ValueError("로즈는 주기(월·요일·방위) 항목에만")
     if k == "scatter" and len(ys) > 4:
         sp["ys"] = ys[:4]
+    tr = raw.get("trend")
+    if tr in ("linear", "ma"):  # 막대 추세선 — 막대 종류 + x 가 순서 있는 기간일 때만
+        if k not in core.TREND_KINDS:
+            raise ValueError("추세선은 막대 종류에만")
+        if not x or typ.get(x) != "date":
+            raise ValueError("추세선은 x 가 기간(날짜) 열일 때만")
+        nx = len(core._levels(core.col_values(table, x)))
+        if nx < 4:
+            raise ValueError("추세선은 기간이 4개 이상")
+        sp["trend"] = tr
+        if tr == "ma":
+            w = raw.get("trend_n") or 3
+            if not isinstance(w, int) or isinstance(w, bool) or not 2 <= w < nx:
+                raise ValueError("이동평균 추세 창이 기간 수보다 작아야 함")
+            sp["trend_n"] = w
     srt = raw.get("sort")
     if k in SORTABLE and srt in ("desc", "asc") and not (x and typ.get(x) == "date"):
         sp["sort"] = srt

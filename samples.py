@@ -1,4 +1,4 @@
-"""샘플 데이터 12종 (가상의 값 — 화면 시연·selftest 용)"""
+"""샘플 데이터 13종 (가상의 값 — 화면 시연·selftest 용)"""
 import random
 
 BUDGET = """연도별 연구개발 예산 (단위: 억원)
@@ -158,11 +158,39 @@ RAIN = """월별 평균 강수량 (단위: mm)
 11월\t53
 12월\t22"""
 
+def _stock_daily(days=160):
+    """가상 데이터 — 일봉 160일 (고정 씨앗 무작위 걸음: 추세가 바뀌는 구간 + 변동성 변화, 큰 움직임 날엔 거래량 증가)"""
+    import datetime
+    rnd = random.Random(20251020)
+    rows = ["가상 주가 일봉 (가상 데이터)", "일자\t시가\t고가\t저가\t종가\t거래량(주)"]
+    p, d, k = 52000.0, datetime.date(2025, 3, 3), 0
+    while k < days:
+        if d.weekday() < 5:
+            drift = 0.0016 if k < 60 else (-0.0022 if k < 105 else 0.0028)
+            vol = 0.014 if k < 90 else 0.022
+            o = p * (1 + rnd.gauss(0, vol * 0.3))
+            c = o * (1 + drift + rnd.gauss(0, vol))
+            hi = max(o, c) * (1 + abs(rnd.gauss(0, vol * 0.5)))
+            lo = min(o, c) * (1 - abs(rnd.gauss(0, vol * 0.5)))
+            r50 = lambda x: int(round(x / 50.0)) * 50
+            o, c, hi, lo = r50(o), r50(c), r50(hi), r50(lo)
+            hi, lo = max(hi, o, c), min(lo, o, c)
+            v = int(rnd.uniform(0.7, 1.3) * 180000 * (1 + 12 * abs(c - o) / o)) // 100 * 100
+            rows.append(f"{d:%Y-%m-%d}\t{o:,}\t{hi:,}\t{lo:,}\t{c:,}\t{v:,}")
+            p = c
+            k += 1
+        d += datetime.timedelta(days=1)
+    return "\n".join(rows)
+
+
+STOCK_DAILY = _stock_daily()
+
 SAMPLES = [
     {"id": "budget", "label": "연도별 예산", "text": BUDGET},
     {"id": "measure", "label": "실험 측정값(산점)", "text": MEASURE},
     {"id": "share", "label": "부서별 비율", "text": SHARE},
     {"id": "stock", "label": "주가 (시가·고가·저가·종가)", "text": STOCK},
+    {"id": "stock_daily", "label": "주가 일봉 160일 (가상 데이터 · 이동평균·지표)", "text": STOCK_DAILY},
     {"id": "skills", "label": "역량 평가 (방사형)", "text": SKILLS},
     {"id": "pnl", "label": "월별 손익 (폭포)", "text": PNL},
     {"id": "funnel", "label": "채용 단계 (깔때기)", "text": FUNNEL},

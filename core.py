@@ -7,6 +7,7 @@ import csv
 import io
 import math
 import re
+import fin
 
 MAX_ROWS = 5000
 MAX_COLS = 60
@@ -69,6 +70,26 @@ _TIME_NAME = re.compile(r"(연도|년도|년|월|일자|날짜|기간|분기|반
 def is_date(s):
     t = str(s).strip()
     return any(p.match(t) for p in _DATE_PATS)
+
+
+_PERIOD_MORE = re.compile(r"^\d{1,2}\s*(주차|일)$")
+_CAT_HEAD = re.compile(r"(범주|항목|구분|분류|기간|월|분기|연도|년도|주차|요일|category|item|period|month|quarter)", re.I)
+
+
+def period_column(name, vals):
+    """'1월…12월'·'1분기'·'Q1'·'2026년'·'1주차' 처럼 숫자+기간 글자인 값만 있는 열 → 순서 있는 기간(날짜) 열로 볼지.
+    split_num 은 '1월' 을 숫자 1(단위 월)로 읽으므로 따로 본다. '3개'·'5명' 같은 진짜 수량은 해당 없음.
+    조건: 비지 않은 값이 모두 기간 꼴이고 숫자만 있는 값은 없음 + (값이 서로 다름 또는 머리글이 범주·기간 말)"""
+    vs = [str(v).strip() for v in vals]
+    if not vs or any(re.fullmatch(r"[\d.,\s]+", v) for v in vs):
+        return False
+    if not all(is_date(v) or _PERIOD_MORE.match(v) for v in vs):
+        return False
+    head = bool(_CAT_HEAD.search(name or ""))
+    if all(_PERIOD_MORE.match(v) for v in vs):  # '3일'·'2주차' 는 기간이 아닐 수도 → 1씩 늘어나는 차례이거나 머리글이 기간 말일 때만
+        ns = [int(re.match(r"\d+", v).group()) for v in vs]
+        return head or (len(ns) >= 3 and all(b == a + 1 for a, b in zip(ns, ns[1:])))
+    return head or len(set(vs)) == len(vs)
 
 
 def date_key(s):
@@ -221,6 +242,13 @@ def normalize(rows, transpose=None):
         if m and m.group(1).strip():
             names[j], units[j] = m.group(1).strip(), units[j] or m.group(2).strip()
     names = _dedupe(names)
+    empty = [j for j in range(width) if rows and not any(str(r[j]).strip() not in _EMPTY for r in rows)]
+    if empty and len(empty) < width:  # 머리글만 있고 값이 모두 빈 열(예: 디지타이저 '막대 끝(합계)') → 뺌
+        notes.append("값이 모두 빈 열 " + ", ".join(f"'{names[j]}'" for j in empty) + " 을(를) 뺌")
+        keep = [j for j in range(width) if j not in empty]
+        rows = [[r[j] for j in keep] for r in rows]
+        names, units = [names[j] for j in keep], [units[j] for j in keep]
+        width = len(keep)
     if len(rows) > MAX_ROWS:
         notes.append(f"행이 많아 앞 {MAX_ROWS}행만 사용")
         rows = rows[:MAX_ROWS]
@@ -272,7 +300,9 @@ def infer_types(table, gunit=""):
         nnum = sum(1 for v, _ in parsed if v is not None)
         dates = sum(1 for v in vals if is_date(v))
         sufs = {u for v, u in parsed if v is not None and u}
-        if dates >= 0.8 * len(vals) and not (nnum == len(vals) and not _TIME_NAME.search(c["name"]) and not all(re.fullmatch(r"(19|20)\d{2}", v.strip()) for v in vals)):
+        if period_column(c["name"], vals):
+            c["type"] = "date"
+        elif dates >= 0.8 * len(vals) and not (nnum == len(vals) and not _TIME_NAME.search(c["name"]) and not all(re.fullmatch(r"(19|20)\d{2}", v.strip()) for v in vals)):
             c["type"] = "date"
         elif nnum >= 0.8 * len(vals):
             ints = [v for v, _ in parsed if v is not None]
@@ -335,6 +365,60 @@ def box_stats(vals):
     inside = [x for x in v if lo_f <= x <= hi_f] or v
     return {"min": v[0], "q1": q1, "median": med, "q3": q3, "max": v[-1], "wlo": inside[0], "whi": inside[-1],
             "out": [x for x in v if x < lo_f or x > hi_f], "n": len(v), "mean": sum(v) / len(v)}
+
+
+TREND_KINDS = {"col", "col_group", "bar", "bar_group", "col_stack", "bar_stack"}
+STACK_TREND = {"col_stack", "bar_stack"}
+
+
+def trend_mode(spec):
+    """막대 추세선: 'linear'(최소제곱 직선) | 'ma'(이동평균, 창 trend_n) | None. 산점도의 trend(참/거짓)와는 따로"""
+    t = spec.get("trend")
+    return t if spec.get("kind") in TREND_KINDS and t in ("linear", "ma") else None
+
+
+def trend_n(spec, n):
+    try:
+        w = int(spec.get("trend_n") or 3)
+    except (TypeError, ValueError):
+        w = 3
+    return max(2, min(w, max(2, n - 1)))
+
+
+def trend_values(vals, mode, w=3):
+    """x = 1…n(엑셀 범주 축 추세선과 같음). linear: 빈 값을 뺀 점으로 최소제곱 직선을 모든 칸에. ma: 앞 w 개 단순 평균(앞 w−1 칸 빈칸)"""
+    n = len(vals)
+    if mode == "linear":
+        lr = linreg(list(range(1, n + 1)), vals)
+        if not lr:
+            return [None] * n
+        return [lr["slope"] * (i + 1) + lr["intercept"] for i in range(n)]
+    out = [None] * n
+    for i in range(w - 1, n):
+        win = vals[i - w + 1:i + 1]
+        if all(v is not None for v in win):
+            out[i] = sum(win) / w
+    return out
+
+
+def bar_trends(spec, series):
+    """보이는 계열 → 추세 계열 [{name, values, idx, src}] (누적 막대는 합계 하나). 추세선이 없으면 []"""
+    mode = trend_mode(spec)
+    if not mode or not series:
+        return []
+    n = len(series[0]["values"])
+    w = trend_n(spec, n)
+    if spec["kind"] in STACK_TREND:
+        tot = [sum(s["values"][i] or 0 for s in series) if any(s["values"][i] is not None for s in series) else None for i in range(n)]
+        return [{"name": "합계 추세", "values": trend_values(tot, mode, w), "idx": None, "src": "합계", "total": tot}]
+    return [{"name": f"{s['name']} 추세", "values": trend_values(s["values"], mode, w), "idx": s["idx"], "src": s["name"]} for s in series]
+
+
+def trend_label(spec, n=None):
+    mode = trend_mode(spec)
+    if not mode:
+        return ""
+    return "직선 추세(최소제곱)" if mode == "linear" else f"이동평균 {trend_n(spec, n or 99)} 추세"
 
 
 def linreg(xs, ys):
@@ -426,19 +510,19 @@ KINDS = {
     "line": "꺾은선", "area": "영역", "area_stack": "누적 영역", "scatter": "산점도", "pie": "원그래프",
     "doughnut": "도넛", "hist": "히스토그램", "box": "상자그림", "heatmap": "히트맵", "panels": "단위별 2단 비교",
     "index": "지수 비교(첫 값=100)", "dual": "이중축 (보조 y축)",
-    "radar": "방사형", "sparkline": "스파크라인 (계열별 작은 추세선)", "candlestick": "캔들스틱 (시가·고가·저가·종가)",
+    "radar": "방사형", "sparkline": "스파크라인 (계열별 작은 추세선)", "candlestick": "캔들스틱 (시가·고가·저가·종가)", "ohlc": "OHLC 막대 (시가·고가·저가·종가)",
     "waterfall": "폭포 (증감 누적)", "funnel": "깔때기 (단계별 감소)", "bubble": "거품 (x·y·크기)", "step": "계단선",
     "lollipop": "막대사탕 (점+줄기)", "dumbbell": "덤벨 (두 값 비교)", "treemap": "트리맵", "bullet": "목표 대비 (불릿)",
     "rose": "방사 면적 (로즈)", "stack_line": "누적 막대 + 꺾은선", "semi_doughnut": "반원 도넛",
 }
 CAT_KINDS = {"dual", "col", "bar", "col_group", "bar_group", "col_stack", "col_stack100", "bar_stack", "line", "area",
              "area_stack", "pie", "doughnut", "heatmap", "panels", "index",
-             "radar", "sparkline", "candlestick", "waterfall", "funnel", "step", "lollipop", "dumbbell", "treemap",
+             "radar", "sparkline", "candlestick", "ohlc", "waterfall", "funnel", "step", "lollipop", "dumbbell", "treemap",
              "bullet", "rose", "stack_line", "semi_doughnut"}
-NO_SORT = {"waterfall", "candlestick", "sparkline", "step"}
+NO_SORT = {"waterfall", "candlestick", "ohlc", "sparkline", "step"}
 # 값 열(ys) 말고 따로 지정하는 열: 종류 → (명세 키, 계열 역할)
 EXTRA_COL = {"dual": ("y2", "right"), "stack_line": ("y2", "line"), "bullet": ("target", "target"),
-             "candlestick": ("volume", "volume")}
+             "candlestick": ("volume", "volume"), "ohlc": ("volume", "volume")}
 
 
 def visible_ys(spec):
@@ -706,8 +790,9 @@ def recommend(table, limit=12):
 
     def add(kind, why, score, **kw):
         sp = {"kind": kind, "why": why, "score": score, **kw}
-        key = (kind, sp.get("x"), tuple(sp.get("ys") or []), sp.get("group"), sp.get("y2"))
-        if any((o["kind"], o.get("x"), tuple(o.get("ys") or []), o.get("group"), o.get("y2")) == key for o in out):
+        fk = lambda o: repr([o.get(k) for k in fin.FIN_KEYS + ("trend", "trend_n")])  # 주가 지표·추세선 선택이 다르면 다른 후보
+        key = (kind, sp.get("x"), tuple(sp.get("ys") or []), sp.get("group"), sp.get("y2"), fk(sp))
+        if any((o["kind"], o.get("x"), tuple(o.get("ys") or []), o.get("group"), o.get("y2"), fk(o)) == key for o in out):
             return
         out.append(sp)
 
@@ -872,6 +957,15 @@ def recommend(table, limit=12):
     if not out and nums:  # 범주 열이 없고 행이 적음 → 행 번호 기준 막대
         add("col", "행 순서대로 값 비교", 50, x=None, ys=nums[:1])
 
+    # 막대 + 추세선: x 가 기간(순서 있음)이고 막대 후보가 있으면 가장 높은 막대 후보에 직선 추세를 얹은 변형 하나
+    if x_time and n >= 4:
+        bars = sorted((o for o in out if o["kind"] in ("col", "col_group") and o.get("x") == x_time and not o.get("group")),
+                      key=lambda o: -o["score"])
+        if bars:
+            b0 = bars[0]
+            nm = "·".join(b0["ys"][:3]) + ("…" if len(b0["ys"]) > 3 else "")
+            add(b0["kind"], f"{nm} 막대 위에 계열별 추세선(최소제곱 직선)을 점선으로 — 들쭉날쭉한 {x_time}별 값의 전체 방향이 보임",
+                b0["score"] - 2, x=x_time, ys=list(b0["ys"]), trend="linear")
     ohlc, _vol = find_ohlc(table)
     if ohlc:  # 시가·고가·저가·종가를 쌓거나 합치는 그림은 뜻이 없음
         out[:] = [o for o in out if not (o["kind"] in ("col_stack", "col_stack100", "area_stack", "bar_stack", "heatmap", "col_group", "index")
@@ -913,8 +1007,10 @@ def _new_kind_rules(table, add, *, x_time, x_cat, group, nx, main_ys, main_unit,
     ohlc, vol = find_ohlc(table)
     if ohlc and (x_time or x_cat) and n >= 3:
         xx = x_time or x_cat
+        vk = {"volume": vol} if vol else {}
         add("candlestick", f"{'·'.join(ohlc)} 열이 있어 기간마다 시작·끝·범위를 캔들로" + (f" — {jo(vol, '은', '는')} 아래 막대로" if vol else ""),
-            99, x=xx, ys=ohlc, **({"volume": vol} if vol else {}))
+            99, x=xx, ys=ohlc, **vk)
+        _fin_rules(add, xx, ohlc, vol, n)
     # 불릿: 실적 + 목표
     tgt = next((c for c in nums if _HINT_TARGET.search(c)), None)
     act = next((c for c in nums if c != tgt and _HINT_ACTUAL.search(c)), None)
@@ -1026,6 +1122,29 @@ def _new_kind_rules(table, add, *, x_time, x_cat, group, nx, main_ys, main_unit,
                 add("bubble", f"{wa(a)} {b}의 관계에 {jo(size, '을', '를')} 원 크기로 더해 세 값을 한 번에", 76 if n <= 30 else 66, **sp)
 
 
+def _fin_rules(add, xx, ohlc, vol, n):
+    """주가 표(시가·고가·저가·종가) — 이동평균·볼린저·보조지표 칸·매물대 후보 (기간이 지표 창보다 길 때만)"""
+    vk = {"volume": vol} if vol else {}
+    pv = ["volume"] if vol else []
+    if n >= 10:
+        add("ohlc", "같은 가격을 OHLC 막대로 — 몸통 없이 세로선(고가~저가) + 왼쪽 눈금 시가·오른쪽 눈금 종가", 60, x=xx, ys=ohlc, **vk)
+    ma = [w for w in fin.MA_DEFAULT if w <= n]
+    if n >= 20 and len(ma) >= 2:
+        add("candlestick", f"캔들에 이동평균 {'·'.join(map(str, ma))}일 선을 겹쳐 단기·장기 추세와 교차를 함께", 98, x=xx, ys=ohlc, ma=ma,
+            panels=pv, **vk)
+    if n >= 25:
+        add("candlestick", "캔들에 볼린저 밴드(20일 평균 ± 2 표준편차)를 겹쳐 가격이 평소 범위를 벗어난 때를 표시", 94, x=xx, ys=ohlc,
+            bb={"period": 20, "k": 2}, panels=pv, **vk)
+    sub = (["macd"] if n >= 34 else []) + (["rsi"] if n >= 15 else [])
+    if sub:
+        nm = "·".join(fin.PANEL_KO[p] for p in sub + pv)
+        add("candlestick", f"가격 아래에 {nm} 칸을 같은 날짜 축으로 — 추세 강도·과열(RSI 70)·침체(30)를 함께", 96, x=xx, ys=ohlc,
+            ma=[w for w in (5, 20) if w <= n], panels=pv + sub, **vk)
+    if vol and n >= 20:
+        add("candlestick", f"오른쪽에 매물대(가격대별 {vol}) — 거래가 몰린 가격(POC)과 70% 가치 영역", 88, x=xx, ys=ohlc,
+            vprofile={"bins": 24, "va": True}, panels=pv, **vk)
+
+
 def default_title(table, spec):
     ys = spec.get("ys") or []
     k = spec["kind"]
@@ -1039,8 +1158,12 @@ def default_title(table, spec):
         return f"{'·'.join(ys[:3])} 증감 비교 (첫 값=100)"
     if k == "dual":
         return f"{spec['x']}별 {'·'.join(ys[:2])}과 {spec.get('y2', '')}"
-    if k == "candlestick":
-        return f"{spec['x']}별 가격 흐름 (시가·고가·저가·종가)"
+    if trend_mode(spec) and spec.get("x"):
+        base = default_title(table, dict(spec, trend=None))
+        return f"{base} — {'직선 추세' if trend_mode(spec) == 'linear' else '이동평균 추세'}"
+    if k in ("candlestick", "ohlc"):
+        extra = fin.describe(spec)
+        return f"{spec['x']}별 가격 흐름 " + (f"— {extra}" if extra else ("(OHLC 막대)" if k == "ohlc" else "(시가·고가·저가·종가)"))
     if k == "bubble":
         return f"{wa(spec['x'])} {ys[0]}의 관계 (원 크기: {spec.get('size') or '-'})"
     if k == "bullet":

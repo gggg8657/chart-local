@@ -212,6 +212,8 @@ def _swatch(g, x, y, c, shape):
     if shape == "line":
         g.add(f'<line x1="{x:.1f}" y1="{y:.1f}" x2="{x + 14:.1f}" y2="{y:.1f}" stroke="{c}" stroke-width="2.5" stroke-linecap="round"/>'
               f'<circle cx="{x + 7:.1f}" cy="{y:.1f}" r="3.5" fill="{c}" stroke="{SURFACE}" stroke-width="1.5"/>')
+    elif shape == "dash":
+        g.add(f'<line x1="{x:.1f}" y1="{y:.1f}" x2="{x + 16:.1f}" y2="{y:.1f}" stroke="{c}" stroke-width="2.5" stroke-dasharray="5 3"/>')
     elif shape == "dot":
         g.add(f'<circle cx="{x + 6:.1f}" cy="{y:.1f}" r="5" fill="{c}"/>')
     elif shape == "tick":
@@ -297,6 +299,8 @@ def render_category(table, spec, w, h, data=None):
     is_area = k in ("area", "area_stack")
     shape = "line" if is_line else "bar"
     legend = [(s["name"], color_for(spec, s["idx"]), shape) for s in series]
+    trends = core.bar_trends(spec, series) if k in core.TREND_KINDS else []
+    legend += [(t["name"], trend_color(spec, t), "dash") for t in trends]
     g, box = frame(spec, w, h, legend)
     if not cats or not series:
         g.text(w / 2, h / 2, "표시할 값이 없습니다", 13, MUTED, "middle")
@@ -311,6 +315,9 @@ def render_category(table, spec, w, h, data=None):
         lo, hi = min(neg + [0]), max(pos + [0])
     else:
         lo, hi = (min(vals), max(vals)) if vals else (0, 1)
+    tv = [v for t in trends for v in t["values"] if v is not None]
+    if tv:
+        lo, hi = min(lo, min(tv)), max(hi, max(tv))
     zero = not is_line or (lo >= 0 and lo < 0.35 * hi)
     if k == "index":
         zero = False
@@ -330,7 +337,7 @@ def render_category(table, spec, w, h, data=None):
     x0, y0, x1, y1 = box
 
     if horiz:
-        return _render_horizontal(g, spec, k, cats, series, lo, hi, ticks, step, unit, ytitle, xtitle, labels, vfmt, box)
+        return _render_horizontal(g, spec, k, cats, series, lo, hi, ticks, step, unit, ytitle, xtitle, labels, vfmt, box, trends)
 
     n = len(cats)
     room = x_label_room(cats, (x1 - x0 - 60) / n, xtitle)
@@ -362,6 +369,9 @@ def render_category(table, spec, w, h, data=None):
                 if labels != "none" and lab_all and (bw >= tw(vfmt(v), 10.5) - 6 or ns == 1):
                     ly = ya - 5 if v >= 0 else yb + 13
                     g.text(bx + bw / 2, ly, vfmt(v), 10.5 if ns > 1 else 11.5, INK, "middle")
+        for t in trends:
+            si = next((j for j, s in enumerate(series) if s["idx"] == t["idx"]), 0)
+            _trend_path(g, spec, t, [px0 + band * i + (band - gw) / 2 + si * (bw + 2) + bw / 2 for i in range(n)], sy, vfmt, cats, False)
     elif k in ("col_stack", "col_stack100"):
         bw = min(28, band * 0.62)
         for i in range(n):
@@ -392,6 +402,8 @@ def render_category(table, spec, w, h, data=None):
                     g.text(bx + bw / 2, (ya + yb) / 2 + 4, vfmt(v), 10.5, text_on(c), "middle", extra=on_bg(c))
             if labels in ("auto", "all") and k == "col_stack" and up > 0 and n <= 16:
                 g.text(px0 + band * i + band / 2, sy(up) - 5, vfmt(up), 11, INK, "middle")
+        for t in trends:
+            _trend_path(g, spec, t, [px0 + band * (i + .5) for i in range(n)], sy, vfmt, cats, False)
     elif is_area:
         base_acc = [0.0] * n
         prev_top = None
@@ -454,7 +466,25 @@ def render_category(table, spec, w, h, data=None):
     return g.out()
 
 
-def _render_horizontal(g, spec, k, cats, series, lo, hi, ticks, step, unit, vtitle, ctitle, labels, vfmt, box):
+def trend_color(spec, t):
+    return darken(color_for(spec, t["idx"]), 0.72) if t.get("idx") is not None else INK2
+
+
+def _trend_path(g, spec, t, pos, scale, vfmt, cats, horiz):
+    """추세선: 계열색을 어둡게 한 점선(아래 흰 테두리) — pos = 범주별 막대 가운데, scale = 값 → 좌표"""
+    c = trend_color(spec, t)
+    pts = [(p, scale(v)) if not horiz else (scale(v), p) for p, v in zip(pos, t["values"]) if v is not None]
+    if len(pts) < 2:
+        return
+    d = "M" + " L".join(f"{x:.1f},{y:.1f}" for x, y in pts)
+    g.add(f'<path d="{d}" fill="none" stroke="{SURFACE}" stroke-width="4.5" stroke-linejoin="round" stroke-opacity="0.85"/>')
+    g.add(f'<path d="{d}" fill="none" stroke="{c}" stroke-width="2" stroke-dasharray="6 4" stroke-linejoin="round" stroke-linecap="round"/>')
+    for (x, y), (i, v) in zip(pts, [(i, v) for i, v in enumerate(t["values"]) if v is not None]):
+        a, tt = tip(cats[i], t["name"], vfmt(v))
+        g.add(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="6" fill="transparent" {a}>{tt}</circle>')
+
+
+def _render_horizontal(g, spec, k, cats, series, lo, hi, ticks, step, unit, vtitle, ctitle, labels, vfmt, box, trends=()):
     x0, y0, x1, y1 = box
     n, ns = len(cats), len(series)
     labw = min(160, max(tw(c, 12) for c in cats) + 10)
@@ -495,6 +525,9 @@ def _render_horizontal(g, spec, k, cats, series, lo, hi, ticks, step, unit, vtit
                         g.text(xb + 5, by + bh / 2 + 4, vfmt(v), 11 if ns > 1 else 11.5, INK)
                     else:
                         g.text(xa - 5, by + bh / 2 + 4, vfmt(v), 11, INK, "end")
+        for t in trends:
+            si = next((j for j, s in enumerate(series) if s["idx"] == t["idx"]), 0)
+            _trend_path(g, spec, t, [py0 + band * i + (band - gh) / 2 + si * (bh + 2) + bh / 2 for i in range(n)], sx, vfmt, cats, True)
     else:  # bar_stack
         bh = min(24, band * 0.62)
         for i in range(n):
@@ -513,6 +546,8 @@ def _render_horizontal(g, spec, k, cats, series, lo, hi, ticks, step, unit, vtit
                 acc += v
             if labels in ("auto", "all") and acc > 0:
                 g.text(sx(acc) + 5, py0 + band * (i + .5) + 4, vfmt(acc), 11.5, INK)
+        for t in trends:
+            _trend_path(g, spec, t, [py0 + band * (i + .5) for i in range(n)], sx, vfmt, cats, True)
     return g.out()
 
 
@@ -1115,83 +1150,257 @@ def render_sparkline(table, spec, w, h):
     return g.out()
 
 
-# ── 캔들스틱 ────────────────────────────────────────────────────────────────
+# ── 캔들스틱·OHLC 막대 (+ 이동평균·볼린저·매물대·거래량/MACD/RSI 칸) ──────────────
 UP_COL, DOWN_COL = "#e34948", "#2a78d6"  # 한국 관례: 오름 빨강, 내림 파랑
+UP_INTL, DOWN_INTL = "#1baf7a", "#e34948"  # 국제 관례: 오름 초록, 내림 빨강
+MA_COLS = ["#eda100", "#e87ba4", "#4a3aa7", "#008300", "#eb6834", "#52514e"]  # 이동평균 선(짧은 창부터) — 상승·하락 색과 겹치지 않게
+BB_COL, BB_FILL = "#898781", "#c3c2b7"
+MACD_COL, SIG_COL, RSI_COL = "#4a3aa7", "#eda100", "#4a3aa7"
+VP_COL, VP_VA, POC_COL = "#d8d6cd", "#a9a79c", "#eb6834"
+PANEL_W = {"volume": 0.26, "macd": 0.36, "rsi": 0.32}  # 가격 칸 1.0 대비 높이
+PANEL_EXTRA = {"volume": 0, "macd": 120, "rsi": 110}   # 칸을 붙일 때 그림 높이를 늘리는 양(px)
+
+
+def updown_default(spec):
+    return (UP_INTL, DOWN_INTL) if spec.get("colors_updown") == "intl" else (UP_COL, DOWN_COL)
 
 
 def candle_colors(spec):
+    """(상승색, 하락색) — 직접 고른 색(colors 0·1)이 먼저, 없으면 관례(colors_updown: kr 빨강/파랑 · intl 초록/빨강)"""
     cs = spec.get("colors") or {}
     get = (lambda i: cs[i] if isinstance(cs, list) and i < len(cs) and cs[i] else None) if isinstance(cs, list) else (lambda i: cs.get(str(i)))
-    return get(0) or UP_COL, get(1) or DOWN_COL
+    u, d = updown_default(spec)
+    return get(0) or u, get(1) or d
+
+
+def ma_color(i):
+    return MA_COLS[i % len(MA_COLS)]
+
+
+def _path(xs, ys):
+    """빈 값에서 끊기는 선 경로"""
+    out, pen = [], False
+    for x, y in zip(xs, ys):
+        if y is None:
+            pen = False
+            continue
+        out.append(f"{'L' if pen else 'M'}{x:.1f},{y:.1f}")
+        pen = True
+    return "".join(out)
 
 
 def render_candle(table, spec, w, h):
-    d = core.category_data(table, spec)
-    cats = d["cats"]
-    px = [s for s in d["series"] if not s.get("role")]
-    vol = next((s for s in d["series"] if s.get("role") == "volume" and not s["hidden"]), None)
+    import fin
+    k = spec.get("kind")
     up, dn = candle_colors(spec)
+    try:
+        F = fin.compute(table, spec)
+    except (ValueError, KeyError):
+        F = None
+    op = F["opt"] if F else fin.options(spec, 0, False)
     legend = [("상승 (종가 ≥ 시가)", up, "bar"), ("하락 (종가 < 시가)", dn, "bar")]
-    g, (x0, y0, x1, y1) = frame(spec, w, h, legend)
-    if len(px) < 4 or not cats:
-        return _empty(g, w, h, "시가·고가·저가·종가 4개 열이 필요합니다")
-    O, H, L, C = (s["values"] for s in px[:4])
-    unit = px[3].get("unit", "")
+    if F:
+        legend += [(f"이동평균 {wnd}", ma_color(i), "tick") for i, (wnd, _) in enumerate(F["ma"])]
+        if F["bb"]:
+            legend.append((f"볼린저 밴드 ({op['bb']['period']}, {op['bb']['k']:g}σ)", BB_FILL, "bar"))
+        if F["vp"]:
+            legend.append(("매물대 POC", POC_COL, "bar"))
+    panels = op["panels"] if F else []
+    H = h + sum(PANEL_EXTRA[p] for p in panels)
+    g, (x0, y0, x1, y1) = frame(spec, w, H, legend)
+    if not F:
+        return _empty(g, w, H, "시가·고가·저가·종가 4개 열이 필요합니다")
+    cats, O, Hh, L, C = F["cats"], F["O"], F["H"], F["L"], F["C"]
+    unit = F["unit"]
+    vol = F["vol"]
     lows = [v for v in L + O + C if v is not None]
-    highs = [v for v in H + O + C if v is not None]
+    highs = [v for v in Hh + O + C if v is not None]
     if not lows:
-        return _empty(g, w, h)
-    lo, hi, ticks, step = nice_domain(min(lows), max(highs), False, 5)
+        return _empty(g, w, H)
+    over = [v for _, s in F["ma"] for v in s if v is not None]
+    if F["bb"]:
+        over += [v for v in F["bb"][1] + F["bb"][2] if v is not None]
+    lo, hi, ticks, step = nice_domain(min(lows + over), max(highs + over), False, 7 if over else 5)
     xtitle = axis_title(spec, "x_title", spec.get("x") or "")
     ytitle = axis_title(spec, "y_title", unit_title("가격", unit))
     n = len(cats)
-    room = x_label_room(cats, (x1 - x0 - 60) / n, xtitle)
-    vh = (y1 - y0 - room) * 0.22 if vol else 0
-    gap = 14 if vol else 0
-    px0, py0, sy = y_axis(g, (x0, y0, x1, y1 - room - vh - gap), lo, hi, ticks, step, unit, ytitle)
-    py1 = y1 - room - vh - gap
-    band = (x1 - px0) / n
-    cx = lambda i: px0 + band * (i + .5)
-    bw = max(1.5, min(14, band * 0.62))
     dec = core.decimals_of(lows + highs)
     f = lambda v: core.fmt(v, dec, unit)
+    # 칸 나누기: 가격 칸 + 아래 칸들(같은 x 축), 맨 아래에 x 라벨
+    room = 20 + (22 if xtitle else 0)
+    gap = 16
+    if ytitle:
+        g.text(x0, y0 + 2, ytitle, 12, INK2)
+        y0 += 14
+    avail = y1 - room - y0 - gap * len(panels)
+    wsum = 1 + sum(PANEL_W[p] for p in panels)
+    ph = {p: avail * PANEL_W[p] / wsum for p in panels}
+    py0, py1 = y0 + 4, y0 + avail / wsum
+    # 눈금 라벨 폭 — 모든 칸이 같은 왼쪽 끝을 쓰게
+    labs = tick_fmt(ticks, step, unit)
+    lw = max(tw(s, 11.5) for s in labs) + 8
+    sub = {}
+    if "volume" in panels:
+        vv = [v for v in F["V"] if v is not None] or [0]
+        sub["volume"] = nice_domain(0, max(vv), True, 2)
+    if "macd" in panels:
+        mv = [v for s in F["macd"] for v in s if v is not None] or [0]
+        sub["macd"] = nice_domain(min(mv), max(mv), True, 3)
+    if "rsi" in panels:
+        sub["rsi"] = (0, 100, [30, 70], 10)
+    for p, (a_, b_, t_, s_) in sub.items():
+        if p != "rsi":
+            lw = max(lw, max(tw(s, 10.5) for s in tick_fmt(t_, s_, vol.get("unit", "") if p == "volume" else "")) + 8)
+    px0 = x0 + lw
+    vpw = min(150, (x1 - px0) * 0.2) if F["vp"] else 0
+    px1 = x1 - (vpw + 10 if vpw else 0)
+    band = (px1 - px0) / n
+    cx = lambda i: px0 + band * (i + .5)
+    bw = max(1.2, min(14, band * 0.62))
+    lab_every = _x_every(cats, band)
+    sy = lambda v: py1 - (v - lo) / ((hi - lo) or 1) * (py1 - py0)
+    # 가격 칸 격자·눈금
+    for t, s in zip(ticks, labs):
+        g.line(px0, sy(t), px1, sy(t), GRID, 1)
+        g.text(px0 - 7, sy(t) + 4, s, 11.5, MUTED, "end")
+    for i in range(0, n, lab_every):  # 세로 보조선(날짜 라벨 자리) — 모든 칸에
+        g.line(cx(i), py0, cx(i), y1 - room, "#f0efea", 1)
+    # 볼린저 밴드(채운 띠 + 위·아래 점선 + 중심선)
+    if F["bb"]:
+        mid, bu, bl = F["bb"]
+        seg = [i for i in range(n) if bu[i] is not None and bl[i] is not None]
+        if seg:
+            top = " ".join(f"{cx(i):.1f},{sy(bu[i]):.1f}" for i in seg)
+            bot = " ".join(f"{cx(i):.1f},{sy(bl[i]):.1f}" for i in reversed(seg))
+            g.add(f'<polygon points="{top} {bot}" fill="{BB_FILL}" fill-opacity="0.28" stroke="none"/>')
+            for s_, dash in ((bu, "4 3"), (bl, "4 3"), (mid, "")):
+                g.add(f'<path d="{_path([cx(i) for i in range(n)], [None if v is None else sy(v) for v in s_])}" fill="none" stroke="{BB_COL}" '
+                      f'stroke-width="1.25"{f" stroke-dasharray={chr(34)}{dash}{chr(34)}" if dash else ""}/>')
+    # 캔들 / OHLC 막대
     for i in range(n):
-        o, hh, ll, c = O[i], H[i], L[i], C[i]
+        o, hh, ll, c = O[i], Hh[i], L[i], C[i]
         if None in (o, c):
             continue
         hh = max(x for x in (hh, o, c) if x is not None)
         ll = min(x for x in (ll, o, c) if x is not None)
         col = up if c >= o else dn
+        extra = [f"이동평균 {wnd} {f(s[i])}" for wnd, s in F["ma"] if s[i] is not None]
         a, t = tip(cats[i], f"시가 {f(o)}", f"고가 {f(hh)}", f"저가 {f(ll)}", f"종가 {f(c)}",
-                   f"{vol['name']} {core.fmt(vol['values'][i])}" if vol and vol["values"][i] is not None else "")
-        g.line(cx(i), sy(hh), cx(i), sy(ll), col, 1.25)
-        ya, yb = sy(max(o, c)), sy(min(o, c))
-        g.add(f'<rect x="{cx(i) - bw / 2:.1f}" y="{ya:.1f}" width="{bw:.1f}" height="{max(yb - ya, 1.2):.1f}" rx="1" fill="{col}" {a}>{t}</rect>')
+                   f"{vol['name']} {core.fmt(F['V'][i])}" if vol and F["V"][i] is not None else "", *extra)
+        if k == "ohlc":
+            sw = 1.6 if band >= 4 else 1.1
+            tk = max(1.5, bw / 2)
+            g.add(f'<path d="M{cx(i):.1f},{sy(hh):.1f}V{sy(ll):.1f}M{cx(i) - tk:.1f},{sy(o):.1f}H{cx(i):.1f}M{cx(i):.1f},{sy(c):.1f}H{cx(i) + tk:.1f}" '
+                  f'stroke="{col}" stroke-width="{sw}" fill="none" {a}>{t}</path>')
+        else:
+            g.line(cx(i), sy(hh), cx(i), sy(ll), col, 1.25 if band >= 4 else 1)
+            ya, yb = sy(max(o, c)), sy(min(o, c))
+            g.add(f'<rect x="{cx(i) - bw / 2:.1f}" y="{ya:.1f}" width="{bw:.1f}" height="{max(yb - ya, 1.2):.1f}" rx="{1 if bw > 3 else 0}" fill="{col}" {a}>{t}</rect>')
+    # 이동평균
+    for j, (wnd, s_) in enumerate(F["ma"]):
+        g.add(f'<path d="{_path([cx(i) for i in range(n)], [None if v is None else sy(v) for v in s_])}" fill="none" stroke="{ma_color(j)}" '
+              f'stroke-width="1.75" stroke-linejoin="round" stroke-linecap="round"/>')
     if (spec.get("labels") or "auto") != "none":
         li = max((i for i in range(n) if C[i] is not None), default=None)
         if li is not None:
-            top_ = max(x for x in (H[li], O[li], C[li]) if x is not None)
-            g.text(min(cx(li), x1 - tw(f(C[li]), 11.5) / 2), sy(top_) - 7, f"종가 {f(C[li])}", 11.5, INK, "end" if cx(li) + 40 > x1 else "middle")
-    if vol:
-        vv = [v for v in vol["values"] if v is not None] or [0]
-        vlo, vhi, vt, vs = nice_domain(0, max(vv), True, 2)
-        vy0, vy1 = py1 + gap, py1 + gap + vh
-        vsy = lambda v: vy1 - (v - vlo) / ((vhi - vlo) or 1) * (vy1 - vy0 - 16)
-        g.text(px0 + 4, vy0 + 9, unit_title(vol["name"], vol.get("unit", "")), 11, INK2)
-        for t, lab in zip(vt, tick_fmt(vt, vs, vol.get("unit", ""))):
-            if t > 0 and t == vt[-1]:
-                g.line(px0, vsy(t), x1, vsy(t), GRID, 1)
-                g.text(px0 - 7, vsy(t) + 4, lab, 10.5, MUTED, "end")
-        g.line(px0, vy1, x1, vy1, BASE, 1)
-        for i, v in enumerate(vol["values"]):
-            if v is None:
-                continue
-            o, c = O[i], C[i]
-            col = up if (o is None or c is None or c >= o) else dn
-            a, t = tip(cats[i], vol["name"], core.fmt(v) + _sfx(vol.get("unit", "")))
-            g.add(f'<rect x="{cx(i) - bw / 2:.1f}" y="{vsy(v):.1f}" width="{bw:.1f}" height="{max(vy1 - vsy(v), .5):.1f}" fill="{col}" fill-opacity="0.45" {a}>{t}</rect>')
-    x_cat_labels(g, cats, lambda c: cx(cats.index(c)), band, y1 - room, px0, x1, xtitle)
+            top_ = max(x for x in (Hh[li], O[li], C[li]) if x is not None)
+            g.text(min(cx(li), px1 - tw(f(C[li]), 11.5) / 2), max(py0 + 10, sy(top_) - 7), f"종가 {f(C[li])}", 11.5, INK,
+                   "end" if cx(li) + 40 > px1 else "middle")
+    # 매물대 (오른쪽, 같은 가격 눈금)
+    if F["vp"]:
+        vp = F["vp"]
+        vx0 = px1 + 10
+        mx = max(vp["vols"]) or 1
+        g.text(vx0, py0 - 2, clip(f"매물대 ({vol['name']})", 11, vpw), 11, INK2)
+        d_, u_ = vp["va"]
+        vdec = core.decimals_of(vp["edges"])
+        for i, v in enumerate(vp["vols"]):
+            a_, b_ = vp["edges"][i], vp["edges"][i + 1]
+            ya, yb = sy(b_), sy(a_)
+            col = POC_COL if i == vp["poc"] else (VP_VA if (op["vprofile"]["va"] and d_ <= i <= u_) else VP_COL)
+            at, t = tip(f"{core.fmt(a_, vdec)}~{core.fmt(b_, vdec)}", f"{vol['name']} {core.fmt(round(v))}",
+                        "POC (거래 최다)" if i == vp["poc"] else ("가치 영역 70%" if op["vprofile"]["va"] and d_ <= i <= u_ else ""))
+            g.add(f'<rect x="{vx0:.1f}" y="{ya + 0.5:.1f}" width="{max(0.5, v / mx * (vpw - 4)):.1f}" height="{max(0.8, yb - ya - 1):.1f}" fill="{col}" {at}>{t}</rect>')
+        pm = (vp["edges"][vp["poc"]] + vp["edges"][vp["poc"] + 1]) / 2
+        g.line(px0, sy(pm), px1, sy(pm), POC_COL, 1, 'stroke-dasharray="2 3"')
+        g.text(px1 - 4, sy(pm) - 4, f"POC {f(pm)}", 10.5, INK, "end")
+        if op["vprofile"]["va"]:
+            g.text(x1, py1 + 12, f"가치 영역 {f(vp['edges'][d_])}~{f(vp['edges'][u_ + 1])}", 10, MUTED, "end")
+    # 아래 칸들
+    yy = py1
+    for p in panels:
+        ya, yb = yy + gap, yy + gap + ph[p]
+        yy = yb
+        g.line(px0, ya, px1, ya, GRID, 1)
+        lo_, hi_, t_, s_ = sub[p]
+        ss = lambda v, lo_=lo_, hi_=hi_, ya=ya, yb=yb: yb - (v - lo_) / ((hi_ - lo_) or 1) * (yb - ya - 14)
+        if p == "volume":
+            g.text(px0 + 4, ya + 11, unit_title(vol["name"], vol.get("unit", "")), 11, INK2)
+            for t, lab in zip(t_, tick_fmt(t_, s_, vol.get("unit", ""))):
+                if t > 0 and t == t_[-1]:
+                    g.line(px0, ss(t), px1, ss(t), GRID, 1)
+                    g.text(px0 - 7, ss(t) + 4, lab, 10.5, MUTED, "end")
+            for i, v in enumerate(F["V"]):
+                if v is None:
+                    continue
+                o, c = O[i], C[i]
+                col = up if (o is None or c is None or c >= o) else dn
+                a, t = tip(cats[i], vol["name"], core.fmt(v) + _sfx(vol.get("unit", "")))
+                g.add(f'<rect x="{cx(i) - bw / 2:.1f}" y="{ss(v):.1f}" width="{bw:.1f}" height="{max(yb - ss(v), .5):.1f}" fill="{col}" fill-opacity="0.45" {a}>{t}</rect>')
+            g.line(px0, yb, px1, yb, BASE, 1)
+        elif p == "macd":
+            ml, sg, hs = F["macd"]
+            fa, sl, sn = op["macd"]
+            for t, lab in zip(t_, tick_fmt(t_, s_)):
+                if lo_ <= t <= hi_:
+                    g.line(px0, ss(t), px1, ss(t), BASE if abs(t) < 1e-12 else GRID, 1)
+                    g.text(px0 - 7, ss(t) + 4, lab, 10.5, MUTED, "end")
+            mdec = max(1, core.decimals_of([v for v in ml if v is not None], 2))
+            for i, v in enumerate(hs):
+                if v is None:
+                    continue
+                y_a, y_b = sorted((ss(0), ss(v)))
+                a, t = tip(cats[i], f"MACD {core.fmt(ml[i], mdec)}", f"시그널 {core.fmt(sg[i], mdec)}", f"히스토그램 {core.fmt(v, mdec)}")
+                g.add(f'<rect x="{cx(i) - bw / 2:.1f}" y="{y_a:.1f}" width="{bw:.1f}" height="{max(y_b - y_a, .5):.1f}" fill="{up if v >= 0 else dn}" fill-opacity="0.5" {a}>{t}</rect>')
+            for s__, col in ((ml, MACD_COL), (sg, SIG_COL)):
+                g.add(f'<path d="{_path([cx(i) for i in range(n)], [None if v is None else ss(v) for v in s__])}" fill="none" stroke="{col}" stroke-width="1.6"/>')
+            tx = px0 + 4
+            g.text(tx, ya + 11, f"MACD ({fa}, {sl}, {sn})", 11, INK2)
+            tx += tw(f"MACD ({fa}, {sl}, {sn})", 11) + 14
+            for nm, col in (("MACD", MACD_COL), ("시그널", SIG_COL)):
+                g.line(tx, ya + 7, tx + 14, ya + 7, col, 2.5)
+                g.text(tx + 18, ya + 11, nm, 10.5, INK2)
+                tx += tw(nm, 10.5) + 32
+            g.text(tx, ya + 11, "막대 = 히스토그램(MACD − 시그널)", 10.5, MUTED)
+        elif p == "rsi":
+            rv = F["rsi"]
+            g.add(f'<rect x="{px0:.1f}" y="{ss(70):.1f}" width="{px1 - px0:.1f}" height="{ss(30) - ss(70):.1f}" fill="#f0efea"/>')
+            for t in (30, 70):
+                g.line(px0, ss(t), px1, ss(t), MUTED, 1, 'stroke-dasharray="4 3"')
+                g.text(px0 - 7, ss(t) + 4, str(t), 10.5, MUTED, "end")
+            g.add(f'<path d="{_path([cx(i) for i in range(n)], [None if v is None else ss(v) for v in rv])}" fill="none" stroke="{RSI_COL}" stroke-width="1.6"/>')
+            for i, v in enumerate(rv):
+                if v is not None and (i % max(1, n // 60) == 0 or i == n - 1):
+                    a, t = tip(cats[i], f"RSI {v:.1f}")
+                    g.add(f'<circle cx="{cx(i):.1f}" cy="{ss(v):.1f}" r="3" fill="transparent" {a}>{t}</circle>')
+            last = next((v for v in reversed(rv) if v is not None), None)
+            g.text(px0 + 4, ya + 11, f"RSI ({op['rsi']}, 와일더)" + (f" · 마지막 {last:.1f}" if last is not None else "") + " · 70 과열 / 30 침체", 11, INK2)
+    _x_labels(g, cats, cx, lab_every, y1 - room, px0, px1, xtitle)
     return g.out()
+
+
+def _x_every(cats, band):
+    """긴 날짜 축: 가로 라벨이 겹치지 않게 몇 칸마다 하나씩"""
+    maxw = max((tw(c, 11) for c in cats), default=0)
+    return max(1, math.ceil((maxw + 16) / max(band, 0.5)))
+
+
+def _x_labels(g, cats, cx, every, ybase, x0, x1, xtitle):
+    g.line(x0, ybase, x1, ybase, BASE, 1)
+    for i in range(0, len(cats), every):
+        g.text(cx(i), ybase + 15, cats[i], 11, MUTED, "middle")
+    if xtitle:
+        g.text((x0 + x1) / 2, ybase + 38, xtitle, 12, INK2, "middle")
 
 
 # ── 폭포 ──────────────────────────────────────────────────────────────────
@@ -1642,7 +1851,7 @@ def render(table, spec, w=720, h=440):
     try:
         if k in ("pie", "doughnut", "semi_doughnut"):
             return render_pie(table, spec, w, h)
-        fn = {"radar": render_radar, "sparkline": render_sparkline, "candlestick": render_candle, "waterfall": render_waterfall,
+        fn = {"radar": render_radar, "sparkline": render_sparkline, "candlestick": render_candle, "ohlc": render_candle, "waterfall": render_waterfall,
               "funnel": render_funnel, "bubble": render_bubble, "step": render_step, "lollipop": render_lollipop,
               "dumbbell": render_dumbbell, "bullet": render_bullet, "stack_line": render_stack_line,
               "treemap": render_treemap, "rose": render_rose}.get(k)

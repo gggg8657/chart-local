@@ -16,6 +16,7 @@ import subprocess
 import tempfile
 
 import core
+import fin
 import svg
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -37,9 +38,10 @@ def numfmt(vals, unit=""):
 # 오피스 차트에 해당 형식이 없는 종류 → 그림(PNG) + 데이터 표 (rsvg-convert 가 없으면 표만)
 IMAGE_KINDS = {"step", "treemap", "rose"}
 # 한글(kordoc) 차트가 없는 종류 → 그림 + 표 (radar 만 한글 네이티브)
-HWP_IMAGE_KINDS = {"sparkline", "candlestick", "waterfall", "funnel", "bubble", "step", "lollipop", "dumbbell", "treemap",
+HWP_IMAGE_KINDS = {"sparkline", "candlestick", "ohlc", "waterfall", "funnel", "bubble", "step", "lollipop", "dumbbell", "treemap",
                    "bullet", "rose", "stack_line", "semi_doughnut"}
-NEW_CT = {"radar", "stock", "waterfall", "funnel", "bubble", "lollipop", "dumbbell", "bullet", "stack_line", "semi_doughnut"}
+NEW_CT = {"radar", "stock", "waterfall", "funnel", "bubble", "lollipop", "dumbbell", "bullet", "stack_line", "semi_doughnut",
+          "fvol", "macd", "rsi", "vprofile"}
 KIND_KO = {"up": "증가", "down": "감소", "total": "합계"}
 
 
@@ -76,12 +78,98 @@ def wf_series(steps, spec):
     return out
 
 
+def _h(c):
+    return c.lstrip("#").upper()
+
+
+def fin_blocks(table, spec, base, title):
+    """캔들·OHLC + 지표 → 블록: 가격(주식형 + 이동평균·볼린저 선) · 거래량 · MACD · RSI · 매물대(가로 막대, 옆에)
+    값은 fin 이 계산한 것(PPTX·DOCX 내장 워크북 = 계산값, XLSX 는 _xlsx_fin 이 수식으로 다시 씀)"""
+    F = fin.compute(table, spec)
+    if not F:
+        raise ValueError("캔들스틱·OHLC 는 시가·고가·저가·종가 4개 열이 필요합니다")
+    op = F["opt"]
+    k = spec["kind"]
+    up, dn = svg.candle_colors(spec)
+    unit, cats, n = F["unit"], F["cats"], len(F["cats"])
+    xt = spec.get("x_title", spec.get("x") or "")
+    ov = [{"name": f"이동평균 {w}", "values": v, "color": _h(svg.ma_color(i)), "ov": "ma", "w": w} for i, (w, v) in enumerate(F["ma"])]
+    if F["bb"]:
+        bp, bk = op["bb"]["period"], op["bb"]["k"]
+        mid, bu, bl = F["bb"]
+        ov += [{"name": f"볼린저 중심 ({bp})", "values": mid, "color": _h(svg.BB_COL), "ov": "bb_mid"},
+               {"name": f"볼린저 상단 (+{bk:g}σ)", "values": bu, "color": _h(svg.BB_COL), "ov": "bb_up", "dash": True},
+               {"name": f"볼린저 하단 (−{bk:g}σ)", "values": bl, "color": _h(svg.BB_COL), "ov": "bb_lo", "dash": True}]
+    cname = {"#eda100": "노랑", "#e87ba4": "분홍", "#4a3aa7": "남색", "#008300": "초록", "#eb6834": "주황", "#52514e": "진회색"}
+    parts_ = []
+    if F["ma"]:
+        parts_.append("이동평균 " + " · ".join(f"{w} {cname.get(svg.ma_color(i), '')}" for i, (w, _) in enumerate(F["ma"])))
+    if F["bb"]:
+        parts_.append(f"볼린저 회색(가운데 {op['bb']['period']}일 평균, 점선 ±{op['bb']['k']:g}σ)")
+    ctitle = ("OHLC 막대" if k == "ohlc" else "캔들") + (" — " + " · ".join(parts_) if parts_ else "")
+    out = [dict(base, mode="chart", ctype="stock", fin="price", ohlc=k == "ohlc", cats=cats, series=F["px"], overlays=ov, unit=unit,
+                chart_title=ctitle, x_title=xt, up=up, down=dn, y_title=spec.get("y_title") or svg.unit_title("가격", unit), note=F["note"],
+                weight=1.0, h_cm=9.0)]
+    isup = [o is None or c is None or c >= o for o, c in zip(F["O"], F["C"])]
+    vol = F["vol"]
+    for p in op["panels"]:
+        if p == "volume":
+            V = F["V"]
+            out.append(dict(base, mode="chart", ctype="fvol", fin="volume", cats=cats, unit=vol["unit"], x_title="", labels="none",
+                            series=[{"name": f"{vol['name']} (상승)", "values": [v if u else None for v, u in zip(V, isup)], "color": _h(up)},
+                                    {"name": f"{vol['name']} (하락)", "values": [None if u else v for v, u in zip(V, isup)], "color": _h(dn)}],
+                            rows_series=[vol], y_title=svg.unit_title(vol["name"], vol["unit"]), title=f"{vol['name']}",
+                            chart_title=f"{vol['name']} — 막대 색 = 그날 상승·하락", weight=0.34, h_cm=4.2))
+        elif p == "macd":
+            ml, sg, hs = F["macd"]
+            fa, sl, sn = op["macd"]
+            out.append(dict(base, mode="chart", ctype="macd", fin="macd", cats=cats, unit="", x_title="", labels="none", up=up, down=dn,
+                            series=[{"name": "히스토그램 (+)", "values": [v if v is not None and v >= 0 else None for v in hs], "color": _h(up)},
+                                    {"name": "히스토그램 (−)", "values": [v if v is not None and v < 0 else None for v in hs], "color": _h(dn)},
+                                    {"name": "MACD", "values": ml, "color": _h(svg.MACD_COL)},
+                                    {"name": "시그널", "values": sg, "color": _h(svg.SIG_COL)}],
+                            rows_series=[{"name": "MACD", "values": ml}, {"name": "시그널", "values": sg}, {"name": "히스토그램", "values": hs}],
+                            y_title="", title=f"MACD ({fa}, {sl}, {sn})", params=op["macd"], weight=0.42, h_cm=4.8,
+                            chart_title=f"MACD ({fa}, {sl}, {sn}) — 보라 선 MACD · 주황 선 시그널 · 막대 히스토그램"))
+        elif p == "rsi":
+            rv = F["rsi"]
+            out.append(dict(base, mode="chart", ctype="rsi", fin="rsi", cats=cats, unit="", x_title="", labels="none",
+                            series=[{"name": f"RSI ({op['rsi']})", "values": rv, "color": _h(svg.RSI_COL)},
+                                    {"name": "과열 70", "values": [70] * n, "color": "898781", "dash": True},
+                                    {"name": "침체 30", "values": [30] * n, "color": "898781", "dash": True}],
+                            rows_series=[{"name": f"RSI ({op['rsi']})", "values": rv}], y_title="", title=f"RSI ({op['rsi']}, 와일더)",
+                            chart_title=f"RSI ({op['rsi']}, 와일더) — 점선 70 과열 · 30 침체", period=op["rsi"], weight=0.38, h_cm=4.5))
+    if F["vp"]:
+        vp = F["vp"]
+        d_, u_ = vp["va"]
+        dec = core.decimals_of([v for v in F["H"] + F["L"] if v is not None])
+        ed = [round(e, dec) for e in vp["edges"]]
+        bins = [(ed[i], ed[i + 1], round(v)) for i, v in enumerate(vp["vols"])]
+        lab = [f"{core.fmt(a, dec)}~{core.fmt(b, dec)}".replace("−", "-") for a, b, _ in bins]
+        va_on = op["vprofile"]["va"]
+        kind_of = lambda i: "poc" if i == vp["poc"] else ("va" if va_on and d_ <= i <= u_ else "out")
+        pick = lambda t: [v if kind_of(i) == t else None for i, (_, _, v) in enumerate(bins)]
+        sers = [{"name": "가치 영역 밖" if va_on else vol["name"], "values": pick("out"), "color": _h(svg.VP_COL)}]
+        if va_on:
+            sers.append({"name": f"가치 영역 {int(vp['area'] * 100)}%", "values": pick("va"), "color": _h(svg.VP_VA)})
+        sers.append({"name": "POC (거래 최다)", "values": pick("poc"), "color": _h(svg.POC_COL)})
+        out.append(dict(base, mode="chart", ctype="vprofile", fin="vprofile", cats=lab, series=sers, unit=vol["unit"], labels="none",
+                        x_title=svg.unit_title("가격", unit), y_title=svg.unit_title(vol["name"], vol["unit"]), title=f"매물대 (가격대별 {vol['name']})",
+                        chart_title="매물대", bins=bins, kinds=[kind_of(i) for i in range(len(bins))], vp=vp, side=True, h_cm=7.5))
+    if len(out) > 1:
+        for i, b in enumerate(out, 1):
+            b["panel"] = i
+    return out
+
+
 def new_blocks(table, spec, base, title):
     """새 종류의 블록. 해당 없으면 None"""
     k = spec["kind"]
     xt = spec.get("x_title", spec.get("x") or "")
     if k in IMAGE_KINDS:
         return [image_block(table, spec, base)]
+    if k == "ohlc" or (k == "candlestick" and fin.has_fin(spec)):
+        return fin_blocks(table, spec, base, title)
     if k == "sparkline":
         d = core.category_data(table, spec)
         sers = [s for s in d["series"] if not s["hidden"]]
@@ -223,9 +311,9 @@ def _pptx_style(ch, block, legend):
     ch.font.name = FONT
     ch.font.color.rgb = RGBColor.from_string("52514E")
     ch.has_title = True
-    ch.chart_title.text_frame.text = block["title"]
+    ch.chart_title.text_frame.text = block.get("chart_title") or block["title"]
     tp = ch.chart_title.text_frame.paragraphs[0]
-    tp.font.size, tp.font.bold, tp.font.name = Pt(13), True, FONT
+    tp.font.size, tp.font.bold, tp.font.name = Pt(13 if not block.get("fin") else 10.5), True, FONT
     tp.font.color.rgb = RGBColor.from_string("0B0B0B")
     on = legend and block["legend"] != "none"
     ch.has_legend = on
@@ -322,12 +410,13 @@ def _pptx_chart_new(slide_shapes, block, x, y, cx, cy):
     else:
         cd = CategoryChartData(number_format=nf)
         cd.categories = block["cats"] + (["(숨김) 합계"] if ct == "semi_doughnut" else [])
-        for s in sers:
+        for s in sers + (block.get("overlays") or []):
             vals = list(s["values"]) + ([sum(s["values"])] if ct == "semi_doughnut" else [])
             cd.add_series(s["name"], vals, number_format=numfmt(s["values"], s.get("unit", unit)))
         typ = {"radar": T.RADAR_MARKERS, "stock": T.LINE, "waterfall": T.COLUMN_STACKED, "funnel": T.BAR_STACKED,
                "lollipop": T.LINE_MARKERS, "dumbbell": T.LINE_MARKERS, "bullet": T.COLUMN_CLUSTERED,
-               "stack_line": T.COLUMN_STACKED, "semi_doughnut": T.DOUGHNUT}[ct]
+               "stack_line": T.COLUMN_STACKED, "semi_doughnut": T.DOUGHNUT, "fvol": T.COLUMN_CLUSTERED, "macd": T.COLUMN_CLUSTERED,
+               "rsi": T.LINE, "vprofile": T.BAR_CLUSTERED}[ct]
         gf = slide_shapes.add_chart(typ, x, y, cx, cy, cd)
     ch = gf.chart
     cs = ch._chartSpace
@@ -335,7 +424,8 @@ def _pptx_chart_new(slide_shapes, block, x, y, cx, cy):
     pel = plot._element
     col_of = lambda s, i: (s.get("color") or hexcol(spec, s.get("idx", i)))
     want_leg = {"radar": len(sers) >= 2, "stock": True, "waterfall": True, "funnel": False, "bubble": len(sers) >= 2,
-                "lollipop": False, "dumbbell": True, "bullet": True, "stack_line": True, "semi_doughnut": True}[ct]
+                "lollipop": False, "dumbbell": True, "bullet": True, "stack_line": True, "semi_doughnut": True,
+                "fvol": False, "macd": False, "rsi": False, "vprofile": True}[ct]
     _pptx_style(ch, block, want_leg)
     if ct == "semi_doughnut":
         from pptx.enum.chart import XL_LEGEND_POSITION
@@ -402,12 +492,20 @@ def _pptx_chart_new(slide_shapes, block, x, y, cx, cy):
             _pptx_labels(plot, nf)
         return gf
     va, ca = _pptx_axes(ch, block, nf if ct != "funnel" else None, titles=ct != "funnel")
+    if block.get("fin") and block.get("hide_cats"):  # 위아래로 쌓은 칸: 날짜 라벨은 맨 아래 칸에만
+        from pptx.enum.chart import XL_TICK_LABEL_POSITION
+        ca.tick_label_position = XL_TICK_LABEL_POSITION.NONE
+    if ct in ("fvol", "macd", "rsi", "vprofile"):
+        _pptx_fin_panel(ch, block, plot, pel, va, ca, cs)
+        return gf
     if ct == "stock":
         up, dn = block["up"].lstrip("#").upper(), block["down"].lstrip("#").upper()
-        lo = min(v for s in sers for v in s["values"] if v is not None)
-        hi = max(v for s in sers for v in s["values"] if v is not None)
-        a_, b_, _, st_ = svg.nice_domain(lo, hi, zero=False)
+        ovs = block.get("overlays") or []
+        allp = [v for s in list(sers) + ovs for v in s["values"] if v is not None]
+        a_, b_, _, st_ = svg.nice_domain(min(allp), max(allp), zero=False, target=7 if ovs else 5)
         va.minimum_scale, va.maximum_scale = a_, b_
+        if ovs:
+            pel = _pptx_overlay_lines(pel, len(sers), ovs, a_, b_)
         pel.tag = qn("c:stockChart")
         for t in ("c:grouping", "c:varyColors", "c:marker", "c:dLbls"):
             for e in pel.findall(qn(t)):
@@ -417,11 +515,23 @@ def _pptx_chart_new(slide_shapes, block, x, y, cx, cy):
             _set_marker(sr, "none")
         first_ax = pel.find(qn("c:axId"))
         first_ax.addprevious(_x(f'<c:hiLowLines {NS2}><c:spPr>{_ln("52514E", 12700)}</c:spPr></c:hiLowLines>'))
-        first_ax.addprevious(_x(
-            f'<c:upDownBars {NS2}><c:gapWidth val="60"/>'
-            f'<c:upBars><c:spPr><a:solidFill><a:srgbClr val="{up}"/></a:solidFill>{_ln(up, 9525)}</c:spPr></c:upBars>'
-            f'<c:downBars><c:spPr><a:solidFill><a:srgbClr val="{dn}"/></a:solidFill>{_ln(dn, 9525)}</c:spPr></c:downBars></c:upDownBars>'))
-        ch.has_legend = False  # 시가·고가·저가·종가 계열 범례는 뜻이 없음 — 색 뜻은 표 아래 주석에
+        if block.get("ohlc"):  # OHLC 막대: 고가~저가 선 + 시가(작은 점)·종가(가로 눈금) 표식, 종가 표식은 상승·하락 색
+            srs = pel.findall(qn("c:ser"))
+            _set_marker(srs[0], "circle", 3, "52514E", None)
+            _set_marker(srs[3], "dash", 7, "52514E", None)
+            cat3 = srs[3].find(qn("c:cat"))
+            for i, (o, c) in enumerate(zip(sers[0]["values"], sers[3]["values"])):
+                if o is None or c is None:
+                    continue
+                col = up if c >= o else dn
+                cat3.addprevious(_x(f'<c:dPt {NS2}><c:idx val="{i}"/><c:marker><c:symbol val="dash"/><c:size val="7"/><c:spPr>'
+                                    f'<a:solidFill><a:srgbClr val="{col}"/></a:solidFill><a:ln><a:noFill/></a:ln></c:spPr></c:marker></c:dPt>'))
+        else:
+            first_ax.addprevious(_x(
+                f'<c:upDownBars {NS2}><c:gapWidth val="60"/>'
+                f'<c:upBars><c:spPr><a:solidFill><a:srgbClr val="{up}"/></a:solidFill>{_ln(up, 9525)}</c:spPr></c:upBars>'
+                f'<c:downBars><c:spPr><a:solidFill><a:srgbClr val="{dn}"/></a:solidFill>{_ln(dn, 9525)}</c:spPr></c:downBars></c:upDownBars>'))
+        ch.has_legend = False  # 시가·고가·저가·종가 계열 범례는 뜻이 없음 — 색 뜻은 제목·표 아래 주석에
         return gf
     if ct in ("waterfall", "funnel"):
         plot.gap_width = 40 if ct == "waterfall" else 25
@@ -505,6 +615,80 @@ def _pptx_chart_new(slide_shapes, block, x, y, cx, cy):
             _split_to_line(pel, moves, styles)
         return gf
     raise ValueError(f"알 수 없는 차트: {ct}")
+
+
+def _pptx_overlay_lines(pel, n_px, ovs, lo, hi):
+    """가격 차트 = 시가·고가·저가·종가 주식형(보이는 주 축) + 이동평균·볼린저 c:lineChart(숨긴 보조 축, 범위를 주 축과 똑같이 고정).
+    주식형 그룹에 선을 같이 두면 고가~저가 선이 이 선들까지 이어져서 나눔. 주식형을 먼저 두어야 LibreOffice Writer(DOCX)도 그림.
+    범례는 끔(범례 항목 지우기 번호를 프로그램마다 달리 읽음) — 선 색은 차트 제목에 적음. 반환: 주식형이 될 그룹(pel)"""
+    from lxml import etree
+    from pptx.oxml.ns import qn
+    sers = pel.findall(qn("c:ser"))
+    for sr, o in zip(sers[n_px:], ovs):
+        dash = '<a:prstDash val="dash"/>' if o.get("dash") else ""
+        w = 15875 if o.get("ov", "").startswith("bb") else 22225
+        _set_sppr(sr, f'<a:ln w="{w}" cap="rnd"><a:solidFill><a:srgbClr val="{o["color"]}"/></a:solidFill>{dash}<a:round/></a:ln>')
+        _set_marker(sr, "none")
+    ov_xml = "".join(etree.tostring(sr).decode() for sr in sers[n_px:])
+    for sr in sers[n_px:]:
+        pel.remove(sr)
+    _add_hidden_group(pel, "lineChart", ov_xml, lo, hi)
+    return pel
+
+
+def _add_hidden_group(pel, tag, ser_xml, lo, hi, ax_cat="50070", ax_val="50080"):
+    """ser_xml 계열로 c:<tag> 를 만들어 pel 뒤에 붙이고, 숨긴 catAx + 숨긴 valAx(범위 lo~hi 고정)를 추가. 반환: 새 그룹 요소"""
+    from pptx.oxml.ns import qn
+    head = '<c:grouping val="standard"/><c:varyColors val="0"/>' if tag == "lineChart" else ""
+    tail = '<c:marker val="1"/>' if tag == "lineChart" else ""
+    grp = _x(f'<c:{tag} {NS2}>{head}{ser_xml}{tail}<c:axId val="{ax_cat}"/><c:axId val="{ax_val}"/></c:{tag}>')
+    pel.addnext(grp)
+    pa = pel.getparent()
+    last_ax = [e for e in pa if e.tag in (qn("c:catAx"), qn("c:valAx"), qn("c:dateAx"), qn("c:serAx"))][-1]
+    cat_ax = _x(f'<c:catAx {NS2}><c:axId val="{ax_cat}"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="1"/>'
+                f'<c:axPos val="b"/><c:majorTickMark val="none"/><c:minorTickMark val="none"/><c:tickLblPos val="nextTo"/>'
+                f'<c:crossAx val="{ax_val}"/><c:crosses val="autoZero"/><c:auto val="1"/><c:lblAlgn val="ctr"/><c:lblOffset val="100"/>'
+                f'<c:noMultiLvlLbl val="0"/></c:catAx>')
+    val_ax = _x(f'<c:valAx {NS2}><c:axId val="{ax_val}"/><c:scaling><c:orientation val="minMax"/><c:max val="{hi}"/><c:min val="{lo}"/>'
+                f'</c:scaling><c:delete val="1"/><c:axPos val="r"/><c:numFmt formatCode="General" sourceLinked="1"/>'
+                f'<c:majorTickMark val="none"/><c:minorTickMark val="none"/><c:tickLblPos val="none"/>'
+                f'<c:crossAx val="{ax_cat}"/><c:crosses val="max"/><c:crossBetween val="between"/></c:valAx>')
+    last_ax.addnext(cat_ax)
+    cat_ax.addnext(val_ax)
+    return grp
+
+
+def _pptx_fin_panel(ch, block, plot, pel, va, ca, cs):
+    """거래량(상승·하락 두 계열 겹침) · MACD(히스토그램 막대 + MACD·시그널 선, 같은 축) · RSI(선 + 70·30 기준선, 0~100) · 매물대(가로 막대)"""
+    from pptx.oxml.ns import qn
+    from pptx.util import Pt
+    ct = block["ctype"]
+    sers = block["series"]
+    va.tick_labels.number_format = numfmt([v for s in sers for v in s["values"] if v is not None]) if ct != "macd" else "#,##0"
+    va.tick_labels.number_format_is_linked = False
+    if ct in ("fvol", "macd", "vprofile"):
+        plot.gap_width = 30 if ct != "vprofile" else 15
+        plot.overlap = 100
+        for i, (s, ser) in enumerate(zip(sers, plot.series)):
+            if ct == "macd" and i >= 2:
+                continue
+            al = '<a:alpha val="60000"/>' if ct != "vprofile" else ""
+            _set_sppr(ser._element, f'<a:solidFill><a:srgbClr val="{s["color"]}">{al}</a:srgbClr></a:solidFill><a:ln><a:noFill/></a:ln>')
+        if ct == "macd":
+            styles = [f'<c:spPr>{_ln(s["color"], 19050)}</c:spPr><c:marker><c:symbol val="none"/></c:marker>' for s in sers[2:]]
+            _split_to_line(pel, [2, 3], styles)
+        if ct == "vprofile":
+            ca.tick_labels.font.size = Pt(8)
+        return
+    # rsi
+    for s, sr in zip(sers, pel.findall(qn("c:ser"))):
+        dash = '<a:prstDash val="dash"/>' if s.get("dash") else ""
+        _set_sppr(sr, f'<a:ln w="{12700 if s.get("dash") else 19050}"><a:solidFill><a:srgbClr val="{s["color"]}"/></a:solidFill>{dash}</a:ln>')
+        _set_marker(sr, "none")
+    va.minimum_scale, va.maximum_scale = 0, 100
+    va.major_unit = 50
+    va.has_major_gridlines = False
+    va.tick_labels.number_format = "0"
 
 
 def _pptx_spark_rows(slide, block, x, y, w, h):
@@ -757,6 +941,309 @@ def _xlsx_new(sh, table, spec, b, r0, colref, rowref, head_fill, cell_ref):
     return None
 
 
+def _xlsx_fin(sh, table, spec, blocks, r0, rowref, head_fill):
+    """캔들·OHLC + 지표의 그림 시트: 한 표(가격 = 데이터 시트 수식, 지표 = 엑셀 수식) + 차트 여러 개.
+    지표 수식은 fin 과 같은 규칙(SMA·STDEVP·SMA 로 시작하는 EMA·와일더 RSI)이라 데이터 시트 값을 고치면 함께 바뀜.
+    매물대(표 오른쪽)도 구간 경계·구간 거래량(SUMPRODUCT, 저가~고가에 고르게 배분)·POC 를 수식으로. 가치 영역(70%)만 내보낼 때 계산한 값.
+    openpyxl 은 수식 결과를 못 쓰므로 계산값을 cache 로 돌려주고, 저장 뒤 _xlsx_add_sparklines 가 <v> 에 넣는다(열자마자 값이 보이게).
+    반환: (크기 정보, [(블록, 차트, 높이 칸 수, 옆에 놓기)], cache{칸: 값|"#N/A"})"""
+    from openpyxl.chart import BarChart, LineChart, Reference, StockChart
+    from openpyxl.chart.axis import ChartLines
+    from openpyxl.chart.marker import Marker
+    from openpyxl.chart.series import DataPoint
+    from openpyxl.chart.shapes import GraphicalProperties
+    from openpyxl.chart.updown_bars import UpDownBars
+    from openpyxl.drawing.line import LineProperties
+    from openpyxl.styles import Font
+    from openpyxl.utils import get_column_letter as L
+
+    price = blocks[0]
+    byfin = {b["fin"]: b for b in blocks}
+    F = fin.compute(table, spec)
+    op = F["opt"]
+    cats, n = F["cats"], len(F["cats"])
+    x = spec.get("x")
+    xs = core.col_values(table, x) if x else None
+    xcol = table["columns"][core.col_index(table, x)] if x else None
+    tf = Font(bold=True, name=FONT)
+    cols = []  # (머리글, 키)
+
+    def add(head, key):
+        cols.append((head, key))
+        return len(cols)
+    cA = add(price.get("x_title") or x or "기간", "x")
+    cO, cH, cL, cC = (add(s["name"], ("px", j)) for j, s in enumerate(F["px"]))
+    cV = add(F["vol"]["name"], "vol") if F["vol"] else None
+    cMA = [(w, add(f"이동평균 {w}", ("ma", w))) for w in op["ma"]]
+    cBB = None
+    if op["bb"]:
+        cBB = (add(f"볼린저 중심 ({op['bb']['period']})", "bbm"), add(f"볼린저 상단 (+{op['bb']['k']:g}σ)", "bbu"),
+               add(f"볼린저 하단 (−{op['bb']['k']:g}σ)", "bbl"))
+    cVU = cVD = None
+    if "volume" in op["panels"]:
+        cVU, cVD = add(f"{F['vol']['name']} (상승)", "vu"), add(f"{F['vol']['name']} (하락)", "vd")
+    cM = None
+    if "macd" in op["panels"]:
+        fa, sl, sn = op["macd"]
+        cM = dict(ef=add(f"EMA {fa}", "ef"), es=add(f"EMA {sl}", "es"), m=add("MACD", "m"), s=add("시그널", "s"), h=add("히스토그램", "h"),
+                  hp=add("히스토그램 (+)", "hp"), hn=add("히스토그램 (−)", "hn"))
+    cR = None
+    if "rsi" in op["panels"]:
+        rp = op["rsi"]
+        cR = dict(g=add("상승폭", "g"), l=add("하락폭", "l"), ag=add(f"평균 상승 ({rp})", "ag"), al=add(f"평균 하락 ({rp})", "al"),
+                  r=add(f"RSI ({rp})", "r"), hi=add("과열 70", "70"), lo=add("침체 30", "30"))
+    cache = {}
+    NAV = "#N/A"
+
+    def put(r, c, val, cached=None, fmt=None):
+        cell = sh.cell(r, c, val)
+        if fmt:
+            cell.number_format = fmt
+        if isinstance(val, str) and val.startswith("="):
+            if val == "=NA()":
+                cached = NAV
+            if cached is not None:
+                cache[cell.coordinate] = cached
+        return cell
+    Cv = F["C"]
+    ema_v = {}
+    gain = [None] + [max(b - a, 0) if a is not None and b is not None else None for a, b in zip(Cv, Cv[1:])]
+    loss = [None] + [max(a - b, 0) if a is not None and b is not None else None for a, b in zip(Cv, Cv[1:])]
+    agv, alv = [None] * n, [None] * n
+    if "macd" in op["panels"]:
+        ema_v = {"ef": fin.ema(Cv, op["macd"][0]), "es": fin.ema(Cv, op["macd"][1])}
+    if "rsi" in op["panels"] and n > op["rsi"] and None not in Cv[:op["rsi"] + 1]:
+        p_ = op["rsi"]
+        agv[p_], alv[p_] = sum(gain[1:p_ + 1]) / p_, sum(loss[1:p_ + 1]) / p_
+        for i in range(p_ + 1, n):
+            if gain[i] is None or agv[i - 1] is None:
+                break
+            agv[i] = (agv[i - 1] * (p_ - 1) + gain[i]) / p_
+            alv[i] = (alv[i - 1] * (p_ - 1) + loss[i]) / p_
+    for j, (hd, _) in enumerate(cols, 1):
+        sh.cell(r0, j, hd).font = tf
+        sh.cell(r0, j).fill = head_fill
+    R = lambda i: r0 + 1 + i  # i 번째 기간의 행
+    C = lambda c, i: f"{L(c)}{R(i)}"
+    pf = numfmt([v for v in F["H"] + F["L"] if v is not None], F["unit"])
+    ind = pf if "." in pf else pf.replace('"%"', "") + ".0"
+    NA = "=NA()"
+    srcs = [s["name"] for s in F["px"]] + ([F["vol"]["name"]] if F["vol"] else [])
+    for i, c in enumerate(cats):
+        sh.cell(R(i), cA, _xl_val(c, xcol) if xcol else c)
+        vals = [F["O"][i], F["H"][i], F["L"][i], F["C"][i]] + ([F["V"][i]] if F["vol"] else [])
+        for j, (nm, v) in enumerate(zip(srcs, vals)):
+            ref = rowref(nm, xs.index(c)) if xs is not None and xs.count(c) == 1 else v
+            put(R(i), cO + j, ref, v, pf if j < 4 else numfmt(F["V"], F["vol"]["unit"]))
+        cl = lambda k: C(cC, k)
+        for (w, cc), (_, mv) in zip(cMA, F["ma"]):
+            put(R(i), cc, f"=AVERAGE({cl(i - w + 1)}:{cl(i)})" if i >= w - 1 else NA, mv[i], ind)
+        if cBB:
+            p_, k_ = op["bb"]["period"], op["bb"]["k"]
+            for cc, sv in zip(cBB, F["bb"]):
+                rng = f"{cl(i - p_ + 1)}:{cl(i)}"
+                f = (NA if i < p_ - 1 else f"=AVERAGE({rng})" if cc == cBB[0] else
+                     f"={C(cBB[0], i)}{'+' if cc == cBB[1] else '-'}{k_:g}*STDEVP({rng})")
+                put(R(i), cc, f, sv[i], ind)
+        if cVU:
+            u = vals[3] is not None and vals[0] is not None and vals[3] >= vals[0]
+            put(R(i), cVU, f"=IF({cl(i)}>={C(cO, i)},{C(cV, i)},0)", F["V"][i] if u else 0)
+            put(R(i), cVD, f"=IF({cl(i)}<{C(cO, i)},{C(cV, i)},0)", 0 if u else F["V"][i])
+        if cM:
+            for key, w in (("ef", fa), ("es", sl)):
+                cc = cM[key]
+                f = (NA if i < w - 1 else f"=AVERAGE({cl(0)}:{cl(i)})" if i == w - 1 else
+                     f"={C(cc, i - 1)}+2/({w}+1)*({cl(i)}-{C(cc, i - 1)})")
+                put(R(i), cc, f, ema_v[key][i], ind)
+            j0 = sl - 1 + sn - 1
+            ml, sg, hs = F["macd"]
+            put(R(i), cM["m"], f"={C(cM['ef'], i)}-{C(cM['es'], i)}" if i >= sl - 1 else NA, ml[i], "#,##0.00")
+            sig = (NA if i < j0 else f"=AVERAGE({C(cM['m'], sl - 1)}:{C(cM['m'], i)})" if i == j0 else
+                   f"={C(cM['s'], i - 1)}+2/({sn}+1)*({C(cM['m'], i)}-{C(cM['s'], i - 1)})")
+            put(R(i), cM["s"], sig, sg[i], "#,##0.00")
+            put(R(i), cM["h"], f"={C(cM['m'], i)}-{C(cM['s'], i)}" if i >= j0 else NA, hs[i], "#,##0.00")
+            put(R(i), cM["hp"], f"=MAX({C(cM['h'], i)},0)" if i >= j0 else NA, None if hs[i] is None else max(hs[i], 0), "#,##0.00")
+            put(R(i), cM["hn"], f"=MIN({C(cM['h'], i)},0)" if i >= j0 else NA, None if hs[i] is None else min(hs[i], 0), "#,##0.00")
+        if cR:
+            if i >= 1:
+                put(R(i), cR["g"], f"=MAX({cl(i)}-{cl(i - 1)},0)", gain[i], ind)
+                put(R(i), cR["l"], f"=MAX({cl(i - 1)}-{cl(i)},0)", loss[i], ind)
+            if i == rp:
+                put(R(i), cR["ag"], f"=AVERAGE({C(cR['g'], 1)}:{C(cR['g'], i)})", agv[i], ind)
+                put(R(i), cR["al"], f"=AVERAGE({C(cR['l'], 1)}:{C(cR['l'], i)})", alv[i], ind)
+            elif i > rp:
+                put(R(i), cR["ag"], f"=({C(cR['ag'], i - 1)}*({rp}-1)+{C(cR['g'], i)})/{rp}", agv[i], ind)
+                put(R(i), cR["al"], f"=({C(cR['al'], i - 1)}*({rp}-1)+{C(cR['l'], i)})/{rp}", alv[i], ind)
+            ag, al = C(cR["ag"], i), C(cR["al"], i)
+            put(R(i), cR["r"], f"=IF({al}=0,IF({ag}=0,50,100),100-100/(1+{ag}/{al}))" if i >= rp else NA, F["rsi"][i], "0.00")
+            sh.cell(R(i), cR["hi"], 70)
+            sh.cell(R(i), cR["lo"], 30)
+    ncols = len(cols)
+    catref = Reference(sh, min_col=cA, min_row=R(0), max_row=R(n - 1))
+    ref = lambda c0, c1=None: Reference(sh, min_col=c0, max_col=c1 or c0, min_row=r0, max_row=R(n - 1))
+    out = []
+    # 가격: 이동평균·볼린저 선(주 축, 보임) + 주식형(보조 축 200, 숨김, 같은 범위)
+    up, dn = price["up"].lstrip("#").upper(), price["down"].lstrip("#").upper()
+    ovs = price.get("overlays") or []
+    allp = [v for s in F["px"] + ovs for v in s["values"] if v is not None]
+    a_, b_, _, _ = svg.nice_domain(min(allp), max(allp), zero=False, target=7 if ovs else 5)
+    st = StockChart()
+    st.add_data(ref(cO, cC), titles_from_data=True)
+    st.set_categories(catref)
+    for s_ in st.series:
+        s_.graphicalProperties = _xl_sp(noline=True)
+        s_.marker = Marker(symbol="none")
+        s_.smooth = False
+    st.hiLowLines = ChartLines(spPr=_xl_sp(line="52514E", w=12700))
+    if price.get("ohlc"):
+        st.series[0].marker = Marker(symbol="circle", size=3)
+        st.series[0].marker.graphicalProperties = GraphicalProperties(solidFill="52514E")
+        st.series[0].marker.graphicalProperties.line.noFill = True
+        st.series[3].marker = Marker(symbol="dash", size=7)
+        st.series[3].marker.graphicalProperties = GraphicalProperties(solidFill="52514E")
+        for i in range(n):
+            o, c = F["O"][i], F["C"][i]
+            if o is None or c is None:
+                continue
+            pt = DataPoint(idx=i, marker=Marker(symbol="dash", size=7))
+            pt.marker.graphicalProperties = GraphicalProperties(solidFill=up if c >= o else dn)
+            pt.marker.graphicalProperties.line.noFill = True
+            st.series[3].dPt.append(pt)
+    else:
+        st.upDownBars = UpDownBars(gapWidth=60, upBars=ChartLines(spPr=_xl_sp(fill=up, line=up)), downBars=ChartLines(spPr=_xl_sp(fill=dn, line=dn)))
+    if ovs:
+        ch = LineChart()
+        oc = [cc for _, cc in cMA] + (list(cBB) if cBB else [])
+        for cc in oc:
+            ch.add_data(ref(cc), titles_from_data=True)
+        ch.set_categories(catref)
+        for s_, o in zip(ch.series, ovs):
+            s_.graphicalProperties = _xl_sp(line=o["color"], w=15875 if o.get("ov", "").startswith("bb") else 22225)
+            if o.get("dash"):
+                s_.graphicalProperties.line.prstDash = "dash"
+            s_.marker = Marker(symbol="none")
+            s_.smooth = False
+        _xl_common(st, dict(price, title=price.get("chart_title") or price["title"], labels="none"), 1, "stock")
+        st.y_axis.scaling.min, st.y_axis.scaling.max = a_, b_
+        st.legend = None
+        ch.y_axis.axId = 200
+        ch.y_axis.scaling.min, ch.y_axis.scaling.max = a_, b_
+        ch.y_axis.delete = True
+        ch.y_axis.crosses = "max"
+        ch.y_axis.majorGridlines = None
+        st += ch  # 주식형(보이는 주 축) 먼저 + 선(숨긴 보조 축, 같은 범위) — PPTX·DOCX 와 같은 짜임
+        ch = st
+    else:
+        ch = st
+        _xl_common(ch, dict(price, title=price.get("chart_title") or price["title"], labels="none"), 1, "stock")
+        ch.y_axis.scaling.min, ch.y_axis.scaling.max = a_, b_
+        ch.legend = None
+    ch.width, ch.height = 24, 11
+    out.append((price, ch, 23, False))
+    if "volume" in byfin:
+        b = byfin["volume"]
+        vc = BarChart()
+        vc.type, vc.grouping, vc.overlap, vc.gapWidth = "col", "clustered", 100, 30
+        vc.add_data(ref(cVU, cVD), titles_from_data=True)
+        vc.set_categories(catref)
+        for s_, c in zip(vc.series, (up, dn)):
+            s_.graphicalProperties = _xl_sp(fill=c, line=c)
+        _xl_common(vc, dict(b, title=b.get("chart_title") or b["title"], labels="none"), 1, "col")
+        vc.legend = None
+        vc.width, vc.height = 24, 5
+        out.append((b, vc, 11, False))
+    if "macd" in byfin:
+        b = byfin["macd"]
+        mc = BarChart()
+        mc.type, mc.grouping, mc.overlap, mc.gapWidth = "col", "clustered", 100, 30
+        mc.add_data(ref(cM["hp"], cM["hn"]), titles_from_data=True)
+        mc.set_categories(catref)
+        for s_, c in zip(mc.series, (up, dn)):
+            s_.graphicalProperties = _xl_sp(fill=c, line=c)
+        ml = LineChart()
+        ml.add_data(ref(cM["m"], cM["s"]), titles_from_data=True)
+        ml.set_categories(catref)
+        for s_, c in zip(ml.series, (_h(svg.MACD_COL), _h(svg.SIG_COL))):
+            s_.graphicalProperties = _xl_sp(line=c, w=19050)
+            s_.marker = Marker(symbol="none")
+            s_.smooth = False
+        _xl_common(mc, dict(b, title=b.get("chart_title") or b["title"], labels="none", series=b["rows_series"][:2]), 1, "col")
+        mc.y_axis.number_format = "#,##0"
+        mc.legend = None
+        mc += ml
+        mc.width, mc.height = 24, 6
+        out.append((b, mc, 13, False))
+    if "rsi" in byfin:
+        b = byfin["rsi"]
+        rc = LineChart()
+        rc.add_data(ref(cR["r"], cR["lo"]), titles_from_data=True)
+        rc.set_categories(catref)
+        for j, s_ in enumerate(rc.series):
+            s_.graphicalProperties = _xl_sp(line=_h(svg.RSI_COL) if j == 0 else "898781", w=19050 if j == 0 else 12700)
+            if j:
+                s_.graphicalProperties.line.prstDash = "dash"
+            s_.marker = Marker(symbol="none")
+            s_.smooth = False
+        _xl_common(rc, dict(b, title=b.get("chart_title") or b["title"], labels="none"), 1, "line")
+        rc.y_axis.scaling.min, rc.y_axis.scaling.max, rc.y_axis.majorUnit = 0, 100, 50
+        rc.y_axis.majorGridlines = None
+        rc.y_axis.number_format = "0"
+        rc.legend = None
+        rc.width, rc.height = 24, 5.5
+        out.append((b, rc, 12, False))
+    if "vprofile" in byfin:  # 표 오른쪽에 매물대 표(수식) + 구분 열을 보는 색 계열 수식
+        b = byfin["vprofile"]
+        v0 = ncols + 2
+        heads = ["가격 구간", "하한", "상한", b["y_title"] or "거래량", "구분"] + [s["name"] for s in b["series"]]
+        for j, hd in enumerate(heads):
+            sh.cell(r0, v0 + j, hd).font = tf
+            sh.cell(r0, v0 + j).fill = head_fill
+        nb = len(b["bins"])
+        vpd = b["vp"]
+        Lr = f"${L(cL)}${R(0)}:${L(cL)}${R(n - 1)}"
+        Hr = f"${L(cH)}${R(0)}:${L(cH)}${R(n - 1)}"
+        Vr = f"${L(cV)}${R(0)}:${L(cV)}${R(n - 1)}"
+        cB, cT, cVv, cK = L(v0 + 1), L(v0 + 2), L(v0 + 3), L(v0 + 4)
+        vrng = f"${cVv}${r0 + 1}:${cVv}${r0 + nb}"
+        tfmt = pf.split(";")[0].replace('"%"', "")
+        for i, t in enumerate(b["kinds"]):
+            r = r0 + 1 + i
+            blo, bhi = f"{cB}{r}", f"{cT}{r}"
+            put(r, v0, f'=TEXT({blo},"{tfmt}")&"~"&TEXT({bhi},"{tfmt}")', b["cats"][i])
+            put(r, v0 + 1, f"=MIN({Lr},{Hr})+(MAX({Lr},{Hr})-MIN({Lr},{Hr}))/{nb}*{i}", vpd["edges"][i], pf)
+            put(r, v0 + 2, f"=MIN({Lr},{Hr})+(MAX({Lr},{Hr})-MIN({Lr},{Hr}))/{nb}*{i + 1}" if i < nb - 1 else f"=MAX({Lr},{Hr})",
+                vpd["edges"][i + 1], pf)
+            # 기간마다 거래량 × (저가~고가 중 이 구간과 겹치는 길이 / 저가~고가 길이). 고가=저가인 기간은 그 가격이 든 구간에 전부
+            mn = f"(({Hr}+{bhi}-ABS({Hr}-{bhi}))/2)"
+            mx = f"(({Lr}+{blo}+ABS({Lr}-{blo}))/2)"
+            ov_ = f"(({mn}-{mx})+ABS({mn}-{mx}))/2"
+            last = "<=" if i == nb - 1 else "<"
+            put(r, v0 + 3, f"=SUMPRODUCT({Vr}*{ov_}/(({Hr}-{Lr})+(({Hr}-{Lr})=0)))"
+                           f"+SUMPRODUCT((({Hr}-{Lr})=0)*({Lr}>={blo})*({Lr}{last}{bhi})*{Vr})", vpd["vols"][i], "#,##0")
+            va_txt = "가치 영역" if t == "va" else ""
+            put(r, v0 + 4, f'=IF({cVv}{r}=MAX({vrng}),"POC","{va_txt}")', {"poc": "POC", "va": "가치 영역", "out": ""}[t])
+            for j, s in enumerate(b["series"]):
+                if j == 0:  # 가치 영역 밖(가치 영역을 끈 경우 POC 아닌 모두)
+                    f = f'=IF({cK}{r}="",{cVv}{r},0)' if len(b["series"]) == 3 else f'=IF({cK}{r}<>"POC",{cVv}{r},0)'
+                    want = t == "out" if len(b["series"]) == 3 else t != "poc"
+                elif s["name"].startswith("POC"):
+                    f, want = f'=IF({cK}{r}="POC",{cVv}{r},0)', t == "poc"
+                else:
+                    f, want = f'=IF({cK}{r}="가치 영역",{cVv}{r},0)', t == "va"
+                put(r, v0 + 5 + j, f, vpd["vols"][i] if want else 0, "#,##0")
+        vp = BarChart()
+        vp.type, vp.grouping, vp.overlap, vp.gapWidth = "bar", "clustered", 100, 15
+        vp.add_data(Reference(sh, min_col=v0 + 5, max_col=v0 + 4 + len(b["series"]), min_row=r0, max_row=r0 + nb), titles_from_data=True)
+        vp.set_categories(Reference(sh, min_col=v0, min_row=r0 + 1, max_row=r0 + nb))
+        for s_, s in zip(vp.series, b["series"]):
+            s_.graphicalProperties = _xl_sp(fill=s["color"], line=s["color"])
+        _xl_common(vp, dict(b, title=b.get("chart_title") or b["title"], labels="none", legend="bottom"), 2, "bar")
+        vp.width, vp.height = 9, 11
+        ncols = v0 + 4 + len(b["series"])
+        out.append((b, vp, 0, True))
+    return {"nrows": n + 1, "ncols": ncols}, out, cache
+
+
 def _xlsx_new_cat(sh, spec, b, r0, ncat, nser):
     """범주형 표가 이미 쓰인 뒤(제목 행 r0, A열=범주, B…=계열) 새 범주형 종류의 차트"""
     from openpyxl.chart import BarChart, DoughnutChart, LineChart, RadarChart, Reference, StockChart
@@ -871,10 +1358,11 @@ def _xlsx_new_cat(sh, spec, b, r0, ncat, nser):
     raise ValueError(f"알 수 없는 차트: {ct}")
 
 
-def _xlsx_add_sparklines(path, sheet_sparks):
+def _xlsx_add_sparklines(path, sheet_sparks, sheet_cache=None):
     """저장한 XLSX 손질: (1) 차트 값 라벨 numFmt 에 sourceLinked="0" (2) openpyxl 은 스파크라인을 못 쓴다 →
     시트 XML 끝(extLst)에 x14:sparklineGroups 를 넣는다(XlsxWriter 가 쓰는 것과 같은 구조).
-    sheet_sparks: {시트 번호(0부터): [(데이터 범위, 놓을 칸, 색), ...]}"""
+    sheet_sparks: {시트 번호(0부터): [(데이터 범위, 놓을 칸, 색), ...]}
+    (3) sheet_cache: {시트 번호: {칸: 계산값}} — openpyxl 이 비워 둔 수식 결과(<v>)를 채움(주가 지표 수식). 숫자·글·#N/A"""
     import zipfile
     tmp = path + ".tmp"
     n = 0
@@ -884,7 +1372,23 @@ def _xlsx_add_sparklines(path, sheet_sparks):
             if re.fullmatch(r"xl/charts/chart\d+\.xml", item.filename):
                 # openpyxl 은 값 라벨 서식(numFmt)에 sourceLinked 를 안 써서 일부 프로그램이 '원본 서식'으로 읽음 → 명시
                 data = re.sub(rb'(<numFmt formatCode="[^"]*")(/>)', rb'\1 sourceLinked="0"\2', data)
+                # openpyxl 은 추세선 이름을 속성(name="…")으로 쓴다 — 스키마는 <c:name> 요소(첫 자식)
+                data = re.sub(rb'<trendline name="([^"]*)">', rb'<trendline><name>\1</name>', data)
             m = re.fullmatch(r"xl/worksheets/sheet(\d+)\.xml", item.filename)
+            if m and sheet_cache and int(m.group(1)) - 1 in sheet_cache:
+                cc = sheet_cache[int(m.group(1)) - 1]
+
+                def fill(mm):
+                    v = cc.get(mm.group(1).decode())
+                    if v is None:
+                        return mm.group(0)
+                    if v == "#N/A":
+                        return b'<c r="' + mm.group(1) + b'"' + mm.group(2) + b' t="e"><f>' + mm.group(3) + b'</f><v>#N/A</v></c>'
+                    if isinstance(v, str):
+                        return (b'<c r="' + mm.group(1) + b'"' + mm.group(2) + b' t="str"><f>' + mm.group(3) + b'</f><v>'
+                                + svg.esc(v).encode() + b'</v></c>')
+                    return b'<c r="' + mm.group(1) + b'"' + mm.group(2) + b'><f>' + mm.group(3) + b'</f><v>' + repr(float(v)).encode() + b'</v></c>'
+                data = re.sub(rb'<c r="([A-Z]+\d+)"((?: s="\d+")?)><f>(.*?)</f><v\s*/?>(?:</v>)?</c>', fill, data)
             if m and int(m.group(1)) - 1 in sheet_sparks:
                 groups = []
                 for rng, loc, col in sheet_sparks[int(m.group(1)) - 1]:
@@ -957,7 +1461,7 @@ def blocks_for(table, spec):
             ytitle = "지수 (첫 값=100)" if k == "index" else ("비율 (%)" if k == "col_stack100" else
                                                          svg.unit_title("" if len(sers) > 1 or spec.get("group") else (sers[0]["name"] if sers else ""), unit))
         return [dict(base, mode="chart", ctype=k, cats=d["cats"], series=sers, unit=unit, x_title=spec.get("x_title", spec.get("x") or ""),
-                     y_title=ytitle, note=d["note"])]
+                     y_title=ytitle, note=d["note"], trends=core.bar_trends(spec, sers) if k in core.TREND_KINDS else [])]
     if k == "panels":
         d = core.category_data(table, spec)
         sers = [s for s in d["series"] if not s["hidden"]][:2]
@@ -996,9 +1500,17 @@ def blocks_for(table, spec):
 
 def data_rows(block):
     """블록 → (머리글, 행들) — 문서에 함께 넣는 '편집 가능한 데이터 표'"""
+    if block.get("fin") == "vprofile":
+        kk = {"poc": "POC", "va": "가치 영역", "out": ""}
+        return (["가격 구간", "하한", "상한", block["y_title"] or "거래량", "구분"],
+                [[c, a, b, v, kk[t]] for c, (a, b, v), t in zip(block["cats"], block["bins"], block["kinds"])])
+    if block.get("fin"):
+        sers = block.get("rows_series") or (block["series"] + block.get("overlays", []))
+        return ([block.get("x_title") or block["spec"].get("x") or "기간"] + [s["name"] for s in sers],
+                [[c] + [s["values"][i] for s in sers] for i, c in enumerate(block["cats"])])
     if block["mode"] in ("heat", "image", "spark") or (block["mode"] == "chart" and block["ctype"] not in (
             "scatter", "box", "hist", "bubble", "waterfall", "funnel")):
-        sers = [s for s in block["series"] if s.get("role") != "base"]
+        sers = [s for s in block["series"] if s.get("role") != "base"] + list(block.get("trends") or [])
         head = [block.get("x_title") or "항목"] + [s["name"] for s in sers]
         rows = [[c] + [s["values"][i] for s in sers] for i, c in enumerate(block["cats"])]
         if block.get("ctype") == "bullet" and len(sers) == 2:  # 달성률
@@ -1096,6 +1608,9 @@ def _pptx_chart(slide_shapes, block, x, y, cx, cy):
         cd.categories = block["cats"]
         for s in block["series"]:
             cd.add_series(s["name"], s["values"])
+        if ct in core.STACK_TREND:  # 누적 막대에는 오피스 추세선을 못 붙임 → '합계 추세' 값을 꺾은선 계열로
+            for t in block.get("trends") or []:
+                cd.add_series(t["name"], t["values"])
     gf = slide_shapes.add_chart(types[ct], x, y, cx, cy, cd)
     ch = gf.chart
     ch.font.size = Pt(10)
@@ -1218,6 +1733,8 @@ def _pptx_chart(slide_shapes, block, x, y, cx, cy):
     A = "http://schemas.openxmlformats.org/drawingml/2006/main"
     if ct == "dual":
         _pptx_dual_axis(ch, block, plot)
+    if block.get("trends"):
+        _pptx_bar_trends(plot, block, spec, nser)
     if ct == "scatter" and block.get("trend"):
         for ser in plot.series:
             el = ser._element
@@ -1248,6 +1765,37 @@ def _pptx_chart(slide_shapes, block, x, y, cx, cy):
         s2._element.find(qn("c:cat")).addprevious(errbars("plus", [x["max"] - x["q3"] for x in st]))
         ch.has_legend = False
     return gf
+
+
+def _trend_xml(name, color, mode, w):
+    typ = '<c:trendlineType val="linear"/>' if mode == "linear" else f'<c:trendlineType val="movingAvg"/><c:period val="{w}"/>'
+    return (f'<c:trendline {NS2}><c:name>{svg.esc(name)}</c:name><c:spPr><a:ln w="19050" cap="rnd"><a:solidFill><a:srgbClr val="{color}"/></a:solidFill>'
+            f'<a:prstDash val="dash"/></a:ln></c:spPr>{typ}<c:dispRSqr val="0"/><c:dispEq val="0"/></c:trendline>')
+
+
+def _pptx_bar_trends(plot, block, spec, nser):
+    """막대 추세선 — 묶은·한 계열 막대는 오피스 추세선(c:trendline: 직선=linear, 이동평균=movingAvg) → 데이터를 고치면 따라 바뀜.
+    누적 막대는 추세선을 못 붙여 '합계 추세' 계산값을 같은 축 꺾은선으로(값은 내보낼 때 계산)"""
+    from pptx.oxml.ns import qn
+    mode = core.trend_mode(spec)
+    w = core.trend_n(spec, len(block["cats"]))
+    pel = plot._element
+    trends = block["trends"]
+    if block["ctype"] in core.STACK_TREND:
+        col = svg.INK2.lstrip("#").upper()
+        _split_to_line(pel, list(range(nser, nser + len(trends))),
+                       [f'<c:spPr><a:ln w="22225" cap="rnd"><a:solidFill><a:srgbClr val="{col}"/></a:solidFill><a:prstDash val="dash"/></a:ln></c:spPr>'
+                        '<c:marker><c:symbol val="none"/></c:marker>' for _ in trends])
+        return
+    sers = pel.findall(qn("c:ser"))
+    for t in trends:
+        j = next((i for i, s in enumerate(block["series"]) if s.get("idx") == t["idx"]), None)
+        if j is None or j >= len(sers):
+            continue
+        el = sers[j]
+        anchor = el.find(qn("c:errBars"))
+        anchor = anchor if anchor is not None else el.find(qn("c:cat"))
+        anchor.addprevious(_x(_trend_xml(t["name"], svg.trend_color(spec, t).lstrip("#").upper(), mode, w)))
 
 
 def _axis_title_xml(text, color, rot=True):
@@ -1409,12 +1957,24 @@ def build_pptx(table, specs, path, doc_title="", include_table=True):
                     modes.append("table")
             finally:
                 shutil.rmtree(wd, ignore_errors=True)
-        else:
-            h_each = int(avail / len(blocks))
-            for i, b in enumerate(blocks):
-                _pptx_chart(slide.shapes, b, Inches(0.6), top + h_each * i, Inches(12.1), h_each - Inches(0.05))
+        else:  # 위에서 아래로 쌓음(높이 = weight 비율). side 블록(매물대)은 첫 블록 오른쪽에 같은 높이로
+            main = [b for b in blocks if not b.get("side")]
+            side = [b for b in blocks if b.get("side")]
+            tot = sum(b.get("weight", 1) for b in main)
+            side_w = Inches(3.0) if side else 0
+            yy = top
+            for i, b in enumerate(main):
+                hh = int(avail * b.get("weight", 1) / tot)
+                ww = Inches(12.1) - (side_w + Inches(0.1) if i == 0 and side else 0)
+                bb_ = dict(b, hide_cats=bool(b.get("fin")) and i < len(main) - 1)
+                _pptx_chart(slide.shapes, bb_, Inches(0.6), yy, ww, hh - Inches(0.05))
                 modes.append("native")
-        note = _note(spec, blocks)
+                if i == 0:
+                    for sb in side:
+                        _pptx_chart(slide.shapes, sb, Inches(0.6) + ww + Inches(0.1), yy, side_w, hh - Inches(0.05))
+                        modes.append("native")
+                yy += hh
+        note = _note(spec, blocks, "pptx")
         if note:
             textbox(slide, note, Inches(0.5), Inches(6.95), Inches(12.3), Inches(0.4), 10.5, False, "898781")
         report.append(_rep(n, title, "pptx", modes, blocks))
@@ -1488,6 +2048,12 @@ def _note(spec, blocks, fmt=None):
         r = b["series"][b["nleft"]:]
         parts.append(f"이중축: 왼쪽 축 {'·'.join(x['name'] for x in b['series'][:b['nleft']])}, 오른쪽 축 {'·'.join(x['name'] for x in r)}"
                      " — 두 축 눈금이 독립이라 추세 비교 시 주의")
+    if core.trend_mode(spec):
+        tl = core.trend_label(spec, len(blocks[0].get("cats") or []) if blocks else None)
+        if k in core.STACK_TREND:
+            parts.append(f"합계 추세 = 누적 합계의 {tl} (x = 1, 2, …)" + (" — 누적 막대에는 오피스 추세선을 못 붙여 꺾은선 계열로 넣음" if office else ""))
+        else:
+            parts.append(f"점선 = 계열별 {tl} (x = 1, 2, …)" + (" — 오피스 차트 추세선이라 값을 고치면 따라 바뀜" if office else ""))
     if k == "hist":
         parts.append("구간: 하한 이상 ~ 상한 미만 (마지막 구간은 상한 포함)")
     if k == "heatmap":
@@ -1498,10 +2064,33 @@ def _note(spec, blocks, fmt=None):
             parts.append("누적이 0 아래로 내려가는 구간은 엑셀·파워포인트에서는 맞게 보이나 LibreOffice 는 음수 누적 막대를 위로 그려 어긋남")
     if k == "funnel" and office:
         parts.append("깔때기: 투명한 '여백' 계열로 가운데를 맞춘 누적 가로 막대 (전환율은 데이터 표)")
-    if k == "candlestick":
+    if k in ("candlestick", "ohlc"):
         up, dn = svg.candle_colors(spec)
-        parts.append(f"캔들: 몸통 {'빨강' if up == svg.UP_COL else '첫 색'}=상승(종가 ≥ 시가), {'파랑' if dn == svg.DOWN_COL else '둘째 색'}=하락, 심지=고가~저가"
-                     + (" — 주식형 차트(시가·고가·저가·종가 순서)" if office else ""))
+        cname = {svg.UP_COL: "빨강", svg.DOWN_COL: "파랑", svg.UP_INTL: "초록"}
+        un, dn_ = cname.get(up, "첫 색"), ("빨강" if dn == svg.DOWN_INTL else cname.get(dn, "둘째 색"))
+        if k == "candlestick":
+            parts.append(f"캔들: 몸통 {un}=상승(종가 ≥ 시가), {dn_}=하락, 심지=고가~저가" + (" — 주식형 차트(시가·고가·저가·종가 순서)" if office else ""))
+        else:
+            parts.append(f"OHLC 막대: 세로선=고가~저가, 왼쪽 눈금=시가, 오른쪽 눈금=종가, {un}=상승·{dn_}=하락"
+                         + (" — 문서 차트는 주식형 차트의 고가~저가 선 + 시가(점)·종가(가로 표식, 상승·하락 색)로 나타냄" if office else ""))
+        if blocks and blocks[0].get("fin") == "price":
+            op = fin.options(spec, len(blocks[0]["cats"]), bool(spec.get("volume")))
+            if op["ma"] or op["bb"]:
+                parts.append("이동평균 = 종가 단순 평균(앞 창−1 개는 빈칸)" + (f", 볼린저 = {op['bb']['period']}일 평균 ± {op['bb']['k']:g}×모집단 표준편차" if op["bb"] else "")
+                             + (" — 문서 차트는 선으로(볼린저 띠 채움은 그림에서만), 가격 차트는 선(주 축)+주식형(같은 범위로 고정한 숨은 보조 축)" if office else ""))
+            if "macd" in op["panels"]:
+                parts.append("MACD = EMA{0}−EMA{1}(EMA 는 SMA 로 시작), 시그널 = MACD 의 EMA{2}".format(*op["macd"]))
+            if "rsi" in op["panels"]:
+                parts.append(f"RSI = 와일더 평활 {op['rsi']}일")
+            if op["vprofile"]:
+                parts.append("매물대: 기간마다 거래량을 저가~고가에 고르게 나눠 가격 구간에 더함, POC=거래 최다 구간, 가치 영역=POC 에서 넓힌 70%"
+                             + (" — 문서에서는 가격 축을 함께 쓰지 않는 별도 가로 막대 차트" if office else ""))
+            if office and fmt != "xlsx":
+                parts.append("지표 값은 내보낼 때 계산한 값(내장 워크북은 값) — 엑셀(XLSX)로 받으면 수식이라 가격을 고치면 지표가 다시 계산됨")
+            if fmt == "docx" and (op["ma"] or op["bb"]):
+                parts.append("LibreOffice Writer 는 가격 차트(주식형 + 이동평균·볼린저 선 콤보)를 어긋나게 그림 — LibreOffice 에서는 PPTX·XLSX 로 보세요")
+            if fmt == "xlsx":
+                parts.append("지표 열은 엑셀 수식 — 데이터 시트 가격을 고치면 이동평균·볼린저·MACD·RSI·매물대 거래량이 다시 계산됨(가치 영역 70% 표시만 내보낼 때 값)")
     if k == "lollipop" and office:
         parts.append("막대사탕: 선 없는 꺾은선 표식 + 아래로 100% 오차 막대(줄기)")
     if k == "dumbbell" and office:
@@ -1655,13 +2244,13 @@ def build_docx(table, specs, path, doc_title="", include_table=True):
                 r2.font.size = Pt(9)
                 modes.append("native")
                 continue
-            hgt = int(Cm(9.0 if len(blocks) == 1 else 6.4))
+            hgt = int(Cm(b.get("h_cm") or (9.0 if len(blocks) == 1 else 6.4)))
             gf = _pptx_chart(slide.shapes, b, Emu(0), Emu(0), Emu(width_emu), Emu(hgt))
             p = doc.add_paragraph()
             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
             embed(gf, width_emu, hgt, p.add_run())
             modes.append("native")
-        note = _note(spec, blocks)
+        note = _note(spec, blocks, "docx")
         if include_table or "image" in modes or (blocks[0]["mode"] == "image" and "table" in modes):
             for b in blocks:
                 if b["mode"] == "heat":
@@ -1796,6 +2385,7 @@ def build_xlsx(table, specs, path, doc_title="", include_table=True):
     rowref = lambda name, i: f"={_q('데이터')}!${L(core.col_index(table, name) + 1)}${i + 2}"
     report = []
     sheet_sparks = {}
+    sheet_cache = {}
     img_dir = tempfile.mkdtemp(prefix="chart-xlimg-")
     for n, spec in enumerate(specs, 1):
         blocks = blocks_for(table, spec)
@@ -1803,14 +2393,26 @@ def build_xlsx(table, specs, path, doc_title="", include_table=True):
         sh = wb.create_sheet(f"그림{n}")
         sh["A1"] = f"그림 {n}. {title}"
         sh["A1"].font = Font(bold=True, size=13, name=FONT)
-        note = _note(spec, blocks)
+        note = _note(spec, blocks, "xlsx")
         sh["A2"] = ("※ " + note + " · " if note else "※ ") + "아래 표는 '데이터' 시트를 가리키는 수식입니다 — 데이터 시트 값을 고치면 차트가 바뀝니다"
         sh["A2"].font = Font(size=9, color="898781", name=FONT)
         row0 = 4
         modes = []
         anchor_row = row0
         spark_cols = []
-        for bi, b in enumerate(blocks):
+        if blocks[0].get("fin") == "price":
+            used, charts, cache = _xlsx_fin(sh, table, spec, blocks, row0, rowref, head_fill)
+            sheet_cache[wb.worksheets.index(sh)] = cache
+            c0 = used["ncols"] + 2
+            for b, ch, rows, side in charts:
+                ch.anchor = f"{L(c0 + 11)}{row0}" if side else f"{L(c0)}{anchor_row}"
+                sh.add_chart(ch)
+                modes.append("native")
+                anchor_row += rows
+            blocks_loop = []
+        else:
+            blocks_loop = blocks
+        for bi, b in enumerate(blocks_loop):
             used, chart, sparks = _xlsx_block(sh, table, spec, b, row0, colref, rowref, head_fill)
             if b["mode"] == "spark":
                 sheet_sparks.setdefault(wb.worksheets.index(sh), []).extend(sparks)
@@ -1851,7 +2453,7 @@ def build_xlsx(table, specs, path, doc_title="", include_table=True):
     wb.properties.title = doc_title or "그래프"
     wb.save(path)
     shutil.rmtree(img_dir, ignore_errors=True)
-    _xlsx_add_sparklines(path, sheet_sparks)
+    _xlsx_add_sparklines(path, sheet_sparks, sheet_cache)
     return report
 
 
@@ -1993,6 +2595,8 @@ def _xlsx_block_cat(sh, table, spec, b, r0, colref, rowref, head_fill):
         if ct in ("bar", "bar_group", "bar_stack"):
             ch.x_axis.scaling.orientation = "maxMin"
         _xl_common(ch, b, len(series), ct)
+        if b.get("trends"):
+            ch = _xl_bar_trends(sh, ch, b, spec, r0, len(cats), len(series), used)
         return used, ch
     if ct == "hist":
         src = b["src"]
@@ -2097,6 +2701,55 @@ def _xlsx_block_cat(sh, table, spec, b, r0, colref, rowref, head_fill):
         col += 3
     _xl_common(ch, b, len(b["series"]), ct)
     return {"nrows": maxn + 1, "ncols": col - 1}, ch
+
+
+def _xl_bar_trends(sh, ch, b, spec, r0, ncat, nser, used):
+    """엑셀 막대 추세선: 묶은·한 계열 = 엑셀 추세선(살아 있음). 누적 = 표 오른쪽에 순서·합계(SUM)·합계 추세(직선 TREND / 이동평균 AVERAGE)
+    수식 열 + 같은 축 꺾은선"""
+    from openpyxl.chart import LineChart, Reference
+    from openpyxl.chart.marker import Marker
+    from openpyxl.chart.shapes import GraphicalProperties
+    from openpyxl.chart.trendline import Trendline
+    from openpyxl.drawing.line import LineProperties
+    from openpyxl.styles import Font
+    from openpyxl.utils import get_column_letter as L
+    mode = core.trend_mode(spec)
+    w = core.trend_n(spec, ncat)
+    if b["ctype"] not in core.STACK_TREND:
+        for t in b["trends"]:
+            j = next((i for i, s in enumerate(b["series"]) if s.get("idx") == t["idx"]), None)
+            if j is None:
+                continue
+            c = svg.trend_color(spec, t).lstrip("#").upper()
+            ch.series[j].trendline = Trendline(name=t["name"], trendlineType="linear" if mode == "linear" else "movingAvg",
+                                               period=None if mode == "linear" else w,
+                                               dispRSqr=False, dispEq=False,
+                                               spPr=GraphicalProperties(ln=LineProperties(solidFill=c, prstDash="dash", w=19050)))
+        return ch
+    c0 = used["ncols"] + 1
+    ci, ct_, cr = c0, c0 + 1, c0 + 2
+    for j, hd in enumerate(("순서", "합계", b["trends"][0]["name"])):
+        sh.cell(r0, c0 + j, hd).font = Font(bold=True, name=FONT)
+    rng = lambda c: f"${L(c)}${r0 + 1}:${L(c)}${r0 + ncat}"
+    for i in range(ncat):
+        r = r0 + 1 + i
+        sh.cell(r, ci, i + 1)
+        sh.cell(r, ct_, f"=SUM(B{r}:{L(nser + 1)}{r})")
+        if mode == "linear":
+            sh.cell(r, cr, f"=TREND({rng(ct_)},{rng(ci)},{L(ci)}{r})")
+        else:
+            sh.cell(r, cr, f"=AVERAGE({L(ct_)}{r - w + 1}:{L(ct_)}{r})" if i >= w - 1 else "=NA()")
+        sh.cell(r, ct_).number_format = sh.cell(r, cr).number_format = numfmt([v for s in b["series"] for v in s["values"]], b.get("unit", ""))
+    lc = LineChart()
+    lc.add_data(Reference(sh, min_col=cr, min_row=r0, max_row=r0 + ncat), titles_from_data=True)
+    lc.set_categories(Reference(sh, min_col=1, min_row=r0 + 1, max_row=r0 + ncat))
+    s_ = lc.series[0]
+    s_.graphicalProperties = GraphicalProperties(ln=LineProperties(solidFill=svg.INK2.lstrip("#").upper(), prstDash="dash", w=22225))
+    s_.marker = Marker(symbol="none")
+    s_.smooth = False
+    used["ncols"] = cr
+    ch += lc
+    return ch
 
 
 def _xl_title(text, hex6):
@@ -2269,7 +2922,7 @@ def build_hwpx(table, specs, path, doc_title="", include_table=True, workdir=Non
         title = spec.get("title") or blocks[0]["title"]
         md += [f"**그림 {n}. {title}**", ""]
         modes = []
-        if spec["kind"] in HWP_IMAGE_KINDS:  # 한글 차트(kordoc)에 없는 형식 → 그림 한 장 + 편집용 데이터 표
+        if spec["kind"] in HWP_IMAGE_KINDS or core.trend_mode(spec):  # 한글 차트(kordoc)에 없는 형식(추세선 포함) → 그림 한 장 + 편집용 데이터 표
             png = os.path.join(wd, f"fig{n}.png")
             if svg_to_png(svg.render(table, spec, 720, 440), png, 2):
                 with open(png, "rb") as f:
@@ -2328,6 +2981,8 @@ def build_hwpx(table, specs, path, doc_title="", include_table=True, workdir=Non
         note = _note(spec, blocks, "hwpx")
         if spec["kind"] == "dual":
             note = (note + " · " if note else "") + "한글 차트(kordoc)는 보조 축을 지원하지 않아 그림으로 넣음 — 값은 아래 표에서 고쳐 그림을 다시 만드세요"
+        if core.trend_mode(spec) and spec["kind"] not in HWP_IMAGE_KINDS:
+            note = (note + " · " if note else "") + "한글 차트(kordoc)에 추세선이 없어 그림으로 넣음 — 값은 아래 표에서 고쳐 그림을 다시 만드세요"
         if spec["kind"] in HWP_IMAGE_KINDS:
             note = (note + " · " if note else "") + f"한글 차트(kordoc)에 {core.KINDS[spec['kind']].split(' (')[0]} 형식이 없어 그림으로 넣음 — 값은 아래 표에서 고쳐 그림을 다시 만드세요"
         if spec["kind"] == "scatter" and (len(blocks[0]["series"]) > 1 or spec.get("trend")):
