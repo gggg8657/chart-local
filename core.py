@@ -880,6 +880,7 @@ def recommend(table, limit=12):
     out = out[:limit]
     for i, s in enumerate(out):
         s["id"] = f"c{i + 1}"
+        s["source"] = "rule"
         s["name"] = KINDS[s["kind"]]
         s.setdefault("title", default_title(table, s))
         s.setdefault("legend", "top")

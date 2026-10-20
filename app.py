@@ -7,6 +7,7 @@
 
 흐름: 붙여넣기/CSV/XLSX → 머리글·단위·열 타입 추론(core.py) → 규칙 기반 후보 추천 → SVG 미리보기(svg.py)
       → (선택) 로컬 LLM 이 후보마다 제목·한 줄 설명을 붙임 — 숫자는 만들지 않으며, 표에 없는 숫자가 섞이면 버린다
+      → (선택) 로컬 LLM 이 규칙 후보 순서를 다시 매기고, 더 맞는 종류를 최대 3개 제안(rerank.py — 서버가 검증·그려 본 것만)
       → 고른 그래프 편집 → export.py 가 네이티브 차트 문서로 저장 + 다시 열어 구조 검증(verify)
 """
 import base64
@@ -28,6 +29,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 import core  # noqa: E402
 import export  # noqa: E402
+import rerank  # noqa: E402
 import samples  # noqa: E402
 import svg  # noqa: E402
 
@@ -49,26 +51,34 @@ def read(p):
 
 
 # ── LLM ─────────────────────────────────────────────────────────────────
-def llm(system, user, model=None, temperature=0.3):
+def llm(system, user, model=None, temperature=0.3, schema=None, timeout=600, max_tokens=None):
+    """schema 를 주면 JSON 스키마 안내 디코딩(vLLM response_format json_schema · Ollama format=스키마), 없으면 JSON 객체만 강제"""
     model = model or MODEL
     msgs = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     try:
         if LLM_API == "openai":
-            body = {"model": model, "messages": msgs, "temperature": temperature, "stream": False,
-                    "response_format": {"type": "json_object"}}  # Ollama 경로의 format:"json" 과 같은 뜻
+            rf = ({"type": "json_schema", "json_schema": {"name": "answer", "schema": schema, "strict": True}} if schema
+                  else {"type": "json_object"})  # Ollama 경로의 format:"json" 과 같은 뜻
+            body = {"model": model, "messages": msgs, "temperature": temperature, "stream": False, "response_format": rf,
+                    **({"max_tokens": max_tokens} if max_tokens else {})}
             hdr = {"Content-Type": "application/json", **({"Authorization": f"Bearer {LLM_KEY}"} if LLM_KEY else {})}
             req = urllib.request.Request(LLM_BASE + "/chat/completions", json.dumps(body).encode(), hdr)
-            with urllib.request.urlopen(req, timeout=600) as r:
-                return json.load(r)["choices"][0]["message"]["content"] or ""
-        body = {"model": model, "stream": False, "think": False, "messages": msgs, "format": "json",
-                "options": {"temperature": temperature, "num_ctx": NUM_CTX}}
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                ch = json.load(r)["choices"][0]
+                if max_tokens and ch.get("finish_reason") == "length":
+                    raise rerank.Truncated("LLM 응답이 길이 제한에 잘렸습니다")
+                return ch["message"]["content"] or ""
+        body = {"model": model, "stream": False, "think": False, "messages": msgs, "format": schema or "json",
+                "options": {"temperature": temperature, "num_ctx": NUM_CTX, **({"num_predict": max_tokens} if max_tokens else {})}}
         for attempt in (0, 1):
             try:
                 req = urllib.request.Request(LLM_BASE + "/api/chat", json.dumps(body).encode(), {"Content-Type": "application/json"})
-                with urllib.request.urlopen(req, timeout=600) as r:
+                with urllib.request.urlopen(req, timeout=timeout) as r:
                     j = json.load(r)
                 if "error" in j:
                     raise RuntimeError(j["error"])
+                if max_tokens and j.get("done_reason") == "length":
+                    raise rerank.Truncated("LLM 응답이 길이 제한에 잘렸습니다")
                 return j.get("message", {}).get("content", "")
             except urllib.error.HTTPError as e:
                 msg = e.read().decode(errors="replace")
@@ -78,6 +88,8 @@ def llm(system, user, model=None, temperature=0.3):
                 raise RuntimeError(f"LLM HTTP {e.code}: {msg[:300]}")
     except urllib.error.URLError as e:
         raise RuntimeError(f"LLM 서버 연결 실패: {e.reason}")  # 내부 주소는 응답에 넣지 않음
+    except (TimeoutError, OSError) as e:
+        raise RuntimeError(f"LLM 응답 시간 초과·연결 끊김 ({type(e).__name__})")
     return ""
 
 
@@ -135,7 +147,7 @@ def number_safe(text, ok):
     """LLM 문장 속 숫자가 모두 표에 있는 숫자인지"""
     for t in _NUMTOK.findall(text or ""):
         t = t.replace(",", "")
-        if t not in ok and t.rstrip("0").rstrip(".") not in ok:
+        if t not in ok and ("." not in t or t.rstrip("0").rstrip(".") not in ok):  # 12.50 → 12.5 는 같게, 100 → 1 은 다르게
             return False
     return True
 
@@ -170,6 +182,52 @@ def describe(table, cands, model=None):
         if item:
             out[k] = item
     return {"items": out, "dropped": dropped, "model": model or MODEL}
+
+
+def do_rerank(req, ws=WS, uid="owner"):
+    """규칙 후보를 LLM 이 다시 늘어놓고(후보 안에서만) 더 맞는 종류를 최대 3개 제안 — 서버 검증·그려 보기 통과분만.
+    LLM 이 안 되면 ok=false + 규칙 순서(오류 아님). 사용자당 동시 1·10분 10번(429). id 를 주면 결과를 이력에 저장"""
+    table = check_table(req.get("table"))
+    cands = req.get("candidates")
+    if cands is None:
+        cands = core.recommend(table)
+    cands = rerank.sanitize_cands(cands)
+    model = req.get("model") or None
+    if model is not None and (not isinstance(model, str) or not re.fullmatch(r"[\w.:/-]{1,80}", model)):
+        raise ValueError("모델 이름이 맞지 않습니다")
+    ok_nums = allowed_numbers(table)
+    rerank.acquire(uid)
+    try:
+        res = rerank.run(table, cands, lambda *a, **k: llm(*a, **k), lambda s: number_safe(s, ok_nums), model)
+    finally:
+        rerank.release(uid)
+    res["model"] = model or MODEL
+    hid = req.get("id")
+    if hid and res["ok"]:
+        try:
+            rec = hist_load(hid, ws)
+        except (FileNotFoundError, ValueError):
+            rec = None
+        if rec:
+            rec["rerank"] = dict({k: v for k, v in res.items() if k != "extra"}, ts=datetime.datetime.now().isoformat(timespec="seconds"),
+                                 extra=[{k: v for k, v in e.items() if k != "svg"} for e in res["extra"]])
+            hist_save(rec, ws)
+    return res
+
+
+def stored_rerank(rec, table, cands):
+    """이력에 저장된 AI 순위가 지금 표·후보와 같으면 그대로(제안 그림은 다시 그림) — LLM 을 다시 부르지 않음"""
+    rr = rec.get("rerank") if rec else None
+    if not isinstance(rr, dict) or rr.get("sig") != rerank.signature(table, cands):
+        return None
+    out = dict(rr, extra=[], stored=True)
+    for e in rr.get("extra") or []:
+        try:
+            sp, sv = rerank.validate_extra(table, e)
+        except ValueError:
+            continue
+        out["extra"].append(dict(sp, id=e.get("id"), source="ai", why=e.get("why", ""), svg=sv))
+    return out
 
 
 # ── 이력 (WORKSPACE/history/<id>/rec.json + 내보낸 파일) ─────────────────────
@@ -291,8 +349,11 @@ def do_suggest(req, ws=WS):
                title=table.get("title") or (cands[0].get("title") if cands else "") or "표",
                source=req.get("source") or rec.get("source", ""))
     rec["candidates"] = [{k: v for k, v in c.items() if k != "svg"} for c in cands]
+    rr = stored_rerank(rec, table, rec["candidates"])
+    if not rr:
+        rec.pop("rerank", None)   # 표·후보가 바뀌면 지난 AI 순위는 버림
     hist_save(rec, ws)
-    return {"id": rec["id"], "candidates": cands}
+    return {"id": rec["id"], "candidates": cands, **({"rerank": rr} if rr else {})}
 
 
 def do_render(req):
@@ -357,6 +418,7 @@ def meta():
     return {"samples": [{"id": s["id"], "label": s["label"]} for s in samples.SAMPLES], "kinds": core.KINDS,
             "formats": [{"id": k, "label": v, "ok": k != "hwpx" or export.hwpx_available()} for k, v in FORMATS.items()],
             "model": MODEL, "palette": svg.PAL,
+            "rerank": {"max_candidates": rerank.MAX_CANDS, "max_extra": rerank.MAX_EXTRA, "rate_n": rerank.RATE_N, "rate_s": rerank.RATE_S},
             "kind_colors": {"waterfall": list(svg.WF_COLS), "candlestick": [svg.UP_COL, svg.DOWN_COL]}}
 
 
@@ -458,12 +520,16 @@ class H(BaseHTTPRequestHandler):
         routes = {"/api/parse": do_parse, "/api/suggest": lambda r: do_suggest(r, ws), "/api/render": do_render,
                   "/api/export": lambda r: do_export(r, ws),
                   "/api/describe": lambda r: describe(check_table(r.get("table")), r.get("candidates") or [], r.get("model")),
+                  "/api/rerank": lambda r: do_rerank(r, ws, (self.headers.get("X-Agent-User") or "owner").strip()[:64] or "owner"),
                   "/api/history/delete": lambda r: (hist_delete(r.get("id"), ws), {"ok": True})[1]}
         fn = routes.get(self.path)
         if not fn:
             return self._send({"error": "없는 경로"}, code=404)
         try:
             self._send(fn(req))
+        except (rerank.Busy, rerank.Limited) as e:
+            self._send({"error": str(e), "code": "busy" if isinstance(e, rerank.Busy) else "rate_limited"}, code=429,
+                       extra={"Retry-After": "60"})
         except (ValueError, RuntimeError) as e:
             self._send({"error": str(e)}, code=400)
         except Exception as e:
