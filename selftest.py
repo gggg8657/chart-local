@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""LLM 없이 검증: 숫자·단위·머리글·단위 행·전치 → 열 타입 추론 → 후보 추천 규칙(부적합 차트 배제) → SVG 렌더(15종)
+"""LLM 없이 검증: 숫자·단위·머리글·단위 행·전치 → 열 타입 추론 → 후보 추천 규칙(부적합 차트 배제) → SVG 렌더(33종)
 → 4개 형식 내보내기 + 파일을 다시 열어 차트·내장 워크북·수식 참조 구조 검사 → LLM 숫자 거르기 → 이력 → HTTP.
 WORKSPACE 는 임시 폴더로 바꿔 실데이터 폴더에 흔적을 남기지 않는다.
 python3 selftest.py            # SELFTEST_OUT=폴더 를 주면 SVG·PNG·문서를 거기 저장(눈으로 확인용)"""
@@ -13,6 +13,8 @@ from xml.dom import minidom  # noqa: E402
 
 OUT = os.environ.get("SELFTEST_OUT")
 ok = 0
+NEW_KINDS = ["radar", "sparkline", "candlestick", "waterfall", "funnel", "bubble", "step", "lollipop", "dumbbell", "treemap", "bullet",
+             "rose", "stack_line", "semi_doughnut"]
 
 
 def check(cond, msg):
@@ -143,7 +145,9 @@ try:
             v = export.verify(p)
             check(v["ok"], f"{name}.{fmt} 검사 실패: {v['errors']}")
             nat = sum(1 for r in rep if "native" in r["modes"] or "hwp-native" in r["modes"])
-            check(nat >= len(cands) - 2 and v["charts"] >= nat, f"{name}.{fmt} 네이티브 {nat}/{len(cands)} 차트 {v['charts']}")
+            nonnat = sum(1 for c in cands if c["kind"] in ({"heatmap", "dual", "box"} | export.HWP_IMAGE_KINDS if fmt == "hwpx" else {"heatmap"} | export.IMAGE_KINDS))
+            check(nat >= len(cands) - max(2, nonnat) and v["charts"] >= nat - sum(1 for c in cands if c["kind"] == "sparkline"),
+                  f"{name}.{fmt} 네이티브 {nat}/{len(cands)} 차트 {v['charts']}")
             check(all(r["label"] for r in rep), "형식 보고")
     # 이중축: PPTX·DOCX 는 차트 XML 을 고친 콤보(막대+선, 값 축 2개, 오른쪽 crosses=max), XLSX 는 openpyxl 보조축, HWPX 는 그림+표
     from lxml import etree
@@ -206,6 +210,139 @@ try:
         sec = zh.read("Contents/section0.xml").decode()
         check("chartIDRef=" in sec and "<hp:tbl" in sec, "HWPX 차트+표")
 
+    # 5-1) 새 종류 14개: 추천 규칙 → SVG → 4형식 내보내기(네이티브/그림 보고) → 파일 구조
+    def tbl(text):
+        return core.normalize(core.read_text(text))[0]
+    smp = {x["id"]: tbl(x["text"]) for x in samples.SAMPLES}
+    rec = {k: core.recommend(t) for k, t in smp.items()}
+    first = lambda sid: rec[sid][0]["kind"]
+    check(first("stock") == "candlestick" and rec["stock"][0]["ys"] == ["시가", "고가", "저가", "종가"] and rec["stock"][0]["volume"] == "거래량",
+          rec["stock"][0])
+    check(not any(c["kind"] in ("col_stack", "area_stack") for c in rec["stock"]), "가격 누적 막대 금지")
+    check(first("skills") == "radar" and len(rec["skills"][0]["ys"]) == 3, rec["skills"][0])
+    check(first("pnl") == "waterfall" and rec["pnl"][0]["totals"] == ["기초 잔액", "기말 잔액"], rec["pnl"][0])
+    check(first("funnel") == "funnel" and first("target") == "bullet" and rec["target"][0]["target"] == "목표", rec["target"][0])
+    check(first("rate") == "step", [c["kind"] for c in rec["rate"]])
+    kinds_of = lambda sid: [c["kind"] for c in rec[sid]]
+    check("bubble" in kinds_of("region") and "treemap" in kinds_of("region") and "lollipop" in kinds_of("region"), kinds_of("region"))
+    check("sparkline" in kinds_of("kpi") and "rose" in kinds_of("rain") and "semi_doughnut" in kinds_of("share") and "dumbbell" in kinds_of("target"),
+          (kinds_of("kpi"), kinds_of("rain")))
+    check(all("(를)" not in c["why"] and "(가)" not in c["why"] and "(는)" not in c["why"] for r_ in rec.values() for c in r_
+          if c["kind"] in core.EXTRA_COL or c["kind"] in ("funnel", "bubble", "rose")), "추천 이유 조사(을/를) 정리")
+    STK = "분기\t인건비(억원)\t장비비(억원)\t운영비(억원)\t예산(억원)\n1분기\t32\t18\t9\t62\n2분기\t34\t25\t11\t66\n3분기\t33\t14\t10\t64\n4분기\t36\t30\t14\t70"
+    tb_k = tbl(STK)
+    sl = next(c for c in core.recommend(tb_k) if c["kind"] == "stack_line")
+    check(sl["y2"] == "예산" and sl["ys"] == ["인건비", "장비비", "운영비"], sl)
+    _, pv = core.find_ohlc(tbl("date\tOpen\tHigh\tLow\tClose\tVolume\n2025-01-02\t1\t2\t0.5\t1.5\t10\n2025-01-03\t1.5\t2\t1\t1.2\t12"))
+    check(core.find_ohlc(tbl("date\tOpen\tHigh\tLow\tClose\n2025-01-02\t1\t2\t0.5\t1.5"))[0] == ["Open", "High", "Low", "Close"] and pv == "Volume", "영문 OHLC")
+    # 폭포 계산: 기초·기말 = 합계 막대, 마지막 누적이 기말과 같음 / 0 을 가로지르면 '0 아래' 계열
+    st = core.waterfall_steps(smp["pnl"], rec["pnl"][0])
+    check([x["kind"] for x in st] == ["total", "up", "down", "up", "down", "up", "down", "total"] and st[-2]["b"] == 1605 == st[-1]["b"], st)
+    tb_w = tbl("항목\t손익(억원)\n시작\t50\n1분기\t-120\n2분기\t-30\n3분기\t90")
+    wsp = {"kind": "waterfall", "x": "항목", "ys": ["손익"], "totals": ["시작"]}
+    stw = core.waterfall_steps(tb_w, wsp)
+    check(stw[-1]["auto"] and stw[-1]["b"] == -10 and [export.wf_parts(x) for x in stw][1] == (0.0, 50.0, -70.0), stw)
+    check(len(export.wf_series(stw, wsp)) == 7 and len(export.wf_series(st, rec["pnl"][0])) == 4, "0 아래 계열은 필요할 때만")
+    lay = core.squarify([("a", 6), ("b", 6), ("c", 4), ("d", 3), ("e", 2), ("f", 2), ("g", 1)], 0, 0, 6, 4)
+    check(abs(sum(r[4] * r[5] for r in lay) - 24) < 1e-9 and all(abs(r[4] * r[5] - r[1]) < 1e-9 for r in lay), lay)
+    # 새 종류 명세(샘플 추천 + 직접)
+    new_specs = {}
+    for sid in ("kpi", "share", "stock", "skills", "pnl", "funnel", "target", "rate", "region", "rain"):
+        for c in rec[sid]:
+            if c["kind"] in NEW_KINDS and c["kind"] not in new_specs:
+                new_specs[c["kind"]] = (smp[sid], c)
+    new_specs["stack_line"] = (tb_k, sl)
+    check(set(new_specs) == set(NEW_KINDS), sorted(set(NEW_KINDS) - set(new_specs)))
+    for k, (tb, sp) in new_specs.items():
+        sv = svg.render(tb, sp)
+        minidom.parseString(sv.encode())
+        check("그릴 수 없음" not in sv and "필요합니다" not in sv and "없습니다" not in sv, (k, sv[:300]))
+        if OUT:
+            open(os.path.join(OUT, f"new-{k}.svg"), "w").write(sv)
+    sv = svg.render(*new_specs["candlestick"])
+    check(svg.UP_COL in sv and svg.DOWN_COL in sv and "종가 70,000" in sv and "거래량 (주)" in sv, "캔들 색·종가·거래량")
+    sv = svg.render(*new_specs["sparkline"])
+    check(sv.count("<polyline") == len(new_specs["sparkline"][1]["ys"]), "스파크라인 계열마다 선")
+    check('stroke-dasharray="3 3"' in svg.render(*new_specs["waterfall"]), "폭포 연결선")
+    check(svg.render(smp["stock"], dict(new_specs["candlestick"][1], ys=["시가", "고가"])).count("4개 열이 필요") == 1, "캔들 열 부족 안내")
+    check("3개 이상" in svg.render(smp["share"], {"kind": "radar", "x": "부서", "ys": ["인원"], "top": 2}), "방사형 축 부족 안내")
+    sv = svg.render(smp["target"], dict(new_specs["bullet"][1], labels="auto"))
+    check("109%" in sv and "82%" in sv, "불릿 달성률")
+    check(svg.render(smp["share"], dict(new_specs["semi_doughnut"][1], x="부서", ys=["예산 비중"])).count("<path") == 5, "반원 도넛 조각 5")
+    sv = svg.render(smp["funnel"], new_specs["funnel"][1])
+    check("34.7% · 34.7%" in sv and "43.8% · 2.3%" in sv, "깔때기 전환율")
+    check(svg.render(smp["region"], dict(new_specs["bubble"][1], group=None)).count("<circle") >= 16, "거품 점 16")
+    # 내보내기: 형식 × 종류 → 들어간 방식
+    IMG = {"step", "treemap", "rose"}
+    img = "image" if shutil.which("rsvg-convert") else "table"  # 그림 변환기가 없으면 데이터 표만(정직하게 table 로 보고)
+    want = lambda k, f: (("hwp-native" if k == "radar" else img) if f == "hwpx" else (img if k in IMG else "native"))
+    from lxml import etree as ET
+    CN = "{http://schemas.openxmlformats.org/drawingml/2006/chart}"
+    for fmt in ("xlsx", "pptx", "docx") + (("hwpx",) if export.hwpx_available() else ()):
+        for k, (tb, sp) in new_specs.items():
+            p = os.path.join(outdir, f"new-{k}.{fmt}")
+            rep = export.BUILDERS[fmt](tb, [sp], p, doc_title=f"{k} 시험")
+            v = export.verify(p)
+            check(v["ok"], (k, fmt, v["errors"]))
+            check(rep[0]["modes"] == [want(k, fmt)], (k, fmt, rep[0]["modes"]))
+            check(rep[0]["editable"] == (want(k, fmt) != "image"), (k, fmt, "editable"))
+            if want(k, fmt) == "image":
+                check(v["images"] >= 1, (k, fmt, "그림 없음"))
+            elif k == "sparkline" and fmt == "xlsx":
+                check(v.get("sparklines") == len(sp["ys"]), (k, v["checks"]))
+            else:
+                nch = len(sp["ys"]) if k == "sparkline" else (2 if k == "candlestick" else 1)
+                check(v["charts"] == nch, (k, fmt, v["charts"], nch))
+            if fmt in ("pptx", "docx", "xlsx") and want(k, fmt) == "native" and k != "sparkline":
+                zz = zipfile.ZipFile(p)
+                cn = sorted(n for n in zz.namelist() if re.search(r"charts/chart\d+\.xml$", n))[0]
+                root = ET.fromstring(zz.read(cn))
+                pa = root.find(f"{CN}chart").find(f"{CN}plotArea")
+                tags = [e.tag.split("}")[1] for e in pa if e.tag.endswith("Chart")]
+                exp = {"radar": ["radarChart"], "candlestick": ["stockChart"], "waterfall": ["barChart"], "funnel": ["barChart"],
+                       "bubble": ["bubbleChart"], "lollipop": ["lineChart"], "dumbbell": ["lineChart"], "bullet": ["barChart", "lineChart"],
+                       "stack_line": ["barChart", "lineChart"], "semi_doughnut": ["doughnutChart"]}[k]
+                check(tags == exp, (k, fmt, tags))
+                if k == "candlestick":
+                    sc = pa.find(f"{CN}stockChart")
+                    check(sc.find(f"{CN}hiLowLines") is not None and sc.find(f"{CN}upDownBars") is not None and len(sc.findall(f"{CN}ser")) == 4, (fmt, "주식형"))
+                if k in ("bullet", "stack_line"):
+                    ids = [{e.get("val") for e in pa.find(f"{CN}{t}").findall(f"{CN}axId")} for t in ("barChart", "lineChart")]
+                    check(ids[0] == ids[1] and len(pa.findall(f"{CN}valAx")) == 1, (k, fmt, "같은 축"))
+                if k == "bullet":
+                    check(b'symbol val="dash"' in zz.read(cn), (fmt, "목표 표식"))
+                if k == "waterfall":
+                    check(pa.find(f"{CN}barChart").find(f"{CN}grouping").get("val") == "stacked" and b"noFill" in zz.read(cn), (fmt, "투명 기준"))
+                    leg = root.find(f"{CN}chart").find(f"{CN}legend")
+                    check(leg is not None and leg.find(f"{CN}legendEntry") is not None, (fmt, "기준 범례 숨김"))
+                if k == "lollipop":
+                    check(pa.find(f".//{CN}errBars") is not None, (fmt, "줄기 오차 막대"))
+                if k == "dumbbell":
+                    check(pa.find(f".//{CN}hiLowLines") is not None, (fmt, "덤벨 연결선"))
+                if k == "semi_doughnut":
+                    dc = pa.find(f"{CN}doughnutChart")
+                    check(dc.find(f"{CN}firstSliceAng").get("val") == "270", (fmt, "반원 시작각"))
+                if k == "funnel":
+                    check(pa.find(f"{CN}barChart").find(f"{CN}barDir").get("val") == "bar", (fmt, "가로 막대"))
+            if fmt == "hwpx" and k == "radar":
+                zh = zipfile.ZipFile(p)
+                ch_ = next(n for n in zh.namelist() if n.startswith("Chart/") and n.endswith(".xml"))
+                check(b"radarChart" in zh.read(ch_), "HWPX 방사형 네이티브")
+    # XLSX: 폭포·깔때기 표는 데이터 시트를 가리키는 수식, 스파크라인은 데이터 범위
+    wbw = openpyxl.load_workbook(os.path.join(outdir, "new-waterfall.xlsx"))
+    sw = wbw["그림1"]
+    check(sw["B6"].value == "='데이터'!$B$3" and str(sw["D6"].value).startswith("=C6+B6") and "MIN(C6,D6)" in str(sw["E6"].value), (sw["B6"].value, sw["D6"].value))
+    wbf = openpyxl.load_workbook(os.path.join(outdir, "new-funnel.xlsx"))
+    check("MAX(" in str(wbf["그림1"]["C5"].value), wbf["그림1"]["C5"].value)
+    zs = zipfile.ZipFile(os.path.join(outdir, "new-sparkline.xlsx"))
+    sx = zs.read("xl/worksheets/sheet2.xml").decode()
+    check(sx.count("<x14:sparkline>") == len(new_specs["sparkline"][1]["ys"]) and "'그림1'!B5:" in sx, sx[-600:])
+    # 숨김 계열·종류 바꾸기에도 깨지지 않음
+    for k, (tb, sp) in new_specs.items():
+        sv = svg.render(tb, dict(sp, hidden=list(sp.get("ys") or [])[:1], legend="bottom", labels="all", sort="desc"))
+        minidom.parseString(sv.encode())
+        check("그릴 수 없음" not in sv, (k, "숨김·정렬"))
+
     # 6) LLM 숫자 거르기 (가짜 LLM)
     orig = app.llm
     app.llm = lambda system, user, model=None, temperature=0.3: json.dumps({
@@ -231,6 +368,15 @@ try:
         html = resp.read().decode()
         check(resp.headers.get("X-Author") and "data-sig" in html and 'name="author"' in html, "저작자 표기")
         check(not re.search(r'<(script|link)[^>]+(src|href)="https?://', html), "외부 CDN 없음")
+    meta_ = json.load(urllib.request.urlopen(base + "/api/meta"))
+    check(all(k in meta_["kinds"] for k in NEW_KINDS) and meta_["kind_colors"]["candlestick"] == [svg.UP_COL, svg.DOWN_COL]
+          and {"stock", "skills", "pnl", "funnel"} <= {x["id"] for x in meta_["samples"]}, "meta 새 종류·샘플")
+    ps = post("/api/parse", {"text": samples.STOCK})
+    sgs = post("/api/suggest", {"table": ps["table"]})
+    check(sgs["candidates"][0]["kind"] == "candlestick" and "<rect" in sgs["candidates"][0]["svg"], "suggest 캔들")
+    exs = post("/api/export", {"id": sgs["id"], "table": ps["table"], "specs": sgs["candidates"][:1], "format": "xlsx"})
+    check(exs["verify"]["ok"] and exs["report"][0]["modes"] == ["native"] and exs["verify"]["charts"] == 2, exs["report"])
+    post("/api/history/delete", {"id": sgs["id"]})
     p = post("/api/parse", {"text": samples.SHARE})
     sg = post("/api/suggest", {"table": p["table"], "source": "selftest"})
     check(sg["id"] and sg["candidates"] and sg["candidates"][0]["svg"].startswith("<svg"), "suggest")

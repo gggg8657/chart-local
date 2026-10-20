@@ -356,7 +356,8 @@ def do_export(req, ws=WS):
 def meta():
     return {"samples": [{"id": s["id"], "label": s["label"]} for s in samples.SAMPLES], "kinds": core.KINDS,
             "formats": [{"id": k, "label": v, "ok": k != "hwpx" or export.hwpx_available()} for k, v in FORMATS.items()],
-            "model": MODEL, "palette": svg.PAL}
+            "model": MODEL, "palette": svg.PAL,
+            "kind_colors": {"waterfall": list(svg.WF_COLS), "candlestick": [svg.UP_COL, svg.DOWN_COL]}}
 
 
 # ── HTTP ────────────────────────────────────────────────────────────────

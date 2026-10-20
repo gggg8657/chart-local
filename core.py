@@ -426,9 +426,19 @@ KINDS = {
     "line": "꺾은선", "area": "영역", "area_stack": "누적 영역", "scatter": "산점도", "pie": "원그래프",
     "doughnut": "도넛", "hist": "히스토그램", "box": "상자그림", "heatmap": "히트맵", "panels": "단위별 2단 비교",
     "index": "지수 비교(첫 값=100)", "dual": "이중축 (보조 y축)",
+    "radar": "방사형", "sparkline": "스파크라인 (계열별 작은 추세선)", "candlestick": "캔들스틱 (시가·고가·저가·종가)",
+    "waterfall": "폭포 (증감 누적)", "funnel": "깔때기 (단계별 감소)", "bubble": "거품 (x·y·크기)", "step": "계단선",
+    "lollipop": "막대사탕 (점+줄기)", "dumbbell": "덤벨 (두 값 비교)", "treemap": "트리맵", "bullet": "목표 대비 (불릿)",
+    "rose": "방사 면적 (로즈)", "stack_line": "누적 막대 + 꺾은선", "semi_doughnut": "반원 도넛",
 }
 CAT_KINDS = {"dual", "col", "bar", "col_group", "bar_group", "col_stack", "col_stack100", "bar_stack", "line", "area",
-             "area_stack", "pie", "doughnut", "heatmap", "panels", "index"}
+             "area_stack", "pie", "doughnut", "heatmap", "panels", "index",
+             "radar", "sparkline", "candlestick", "waterfall", "funnel", "step", "lollipop", "dumbbell", "treemap",
+             "bullet", "rose", "stack_line", "semi_doughnut"}
+NO_SORT = {"waterfall", "candlestick", "sparkline", "step"}
+# 값 열(ys) 말고 따로 지정하는 열: 종류 → (명세 키, 계열 역할)
+EXTRA_COL = {"dual": ("y2", "right"), "stack_line": ("y2", "line"), "bullet": ("target", "target"),
+             "candlestick": ("volume", "volume")}
 
 
 def visible_ys(spec):
@@ -441,8 +451,11 @@ def category_data(table, spec):
     중복된 x 는 spec.agg(sum|mean) 로 묶는다. 반환: {cats, series:[{name, values, unit, idx}], agg_note}"""
     x = spec.get("x")
     ys = list(spec.get("ys") or [])
-    if spec.get("kind") == "dual" and spec.get("y2") and spec["y2"] not in ys:
-        ys.append(spec["y2"])  # 이중축: 왼쪽 축 계열(ys) + 오른쪽 축 계열(y2)
+    kind = spec.get("kind")
+    extra_key, role = EXTRA_COL.get(kind, (None, None))
+    extra = spec.get(extra_key) if extra_key else None
+    if extra:  # 이중축 y2(오른쪽 축)·누적+선 y2(선)·불릿 target(목표)·캔들 volume(거래량) — 값 열 뒤에 붙임
+        ys = [y for y in ys if y != extra] + [extra]
     xs = col_values(table, x) if x else [str(i + 1) for i in range(len(table["rows"]))]
     agg = spec.get("agg") or "sum"
     order, seen = [], set()
@@ -491,12 +504,14 @@ def category_data(table, spec):
             if any(len(a) > 1 for a in acc):
                 note = f"같은 '{x}' 값이 여러 행이라 {'평균' if agg == 'mean' else '합계'}로 묶음"
             vs = [None if not a else (sum(a) / len(a) if agg == "mean" else sum(a)) for a in acc]
-            series.append({"name": y, "values": vs, "unit": unit_of(table, y), "idx": i, "right": y == spec.get("y2") and spec.get("kind") == "dual",
-                           "hidden": y in set(spec.get("hidden") or [])})
+            series.append({"name": y, "values": vs, "unit": unit_of(table, y), "idx": i, "right": y == extra and kind == "dual",
+                           "role": role if (extra and y == extra) else None, "hidden": y in set(spec.get("hidden") or [])})
     cats = [c if c != "" else "(빈 값)" for c in order]
     # 정렬 (시간축은 정렬하지 않음)
     srt = spec.get("sort") or "none"
-    vis = [s for s in series if not s["hidden"]]
+    if kind in NO_SORT:  # 순서 자체가 뜻인 종류(누적·시간 흐름)는 정렬하지 않음
+        srt = "none"
+    vis = [s for s in series if not s["hidden"] and not s.get("role")] or [s for s in series if not s["hidden"]]
     if srt in ("asc", "desc") and xtype != "date" and vis:
         tot = [sum((s["values"][i] or 0) for s in vis) for i in range(len(cats))]
         idx = sorted(range(len(cats)), key=lambda i: tot[i], reverse=srt == "desc")
@@ -548,6 +563,120 @@ def dist_data(table, spec):
                  "hidden": g in set(spec.get("hidden") or [])} for i, g in enumerate(levels)]
     return [{"name": y, "values": [v for v in col_nums(table, y) if v is not None], "idx": i,
              "hidden": y in set(spec.get("hidden") or [])} for i, y in enumerate(spec["ys"])]
+
+
+# ── 새 종류용 데이터 ─────────────────────────────────────────────────────────
+TOTAL_NAME = re.compile(r"(합계|총계|소계|누계|시작|기초|기말|期末|잔액|잔고|순이익|순손익|최종|total|subtotal|start|begin|end|net|balance)", re.I)
+
+
+def waterfall_steps(table, spec, data=None):
+    """폭포: 첫 계열 값 = 증감. spec.totals(범주 이름 목록)은 0부터 그린 '합계' 막대(누적을 그 값으로 다시 맞춤).
+    spec.show_total(기본: 마지막 범주가 합계가 아니면 참) 이면 끝에 누적 합계 막대를 붙인다.
+    반환: [{cat, value, a, b, kind: up|down|total}] — a·b 는 막대 아래·위 끝(누적값)"""
+    d = data or category_data(table, spec)
+    sers = [s for s in d["series"] if not s["hidden"] and not s.get("role")]
+    if not sers:
+        return []
+    vals = sers[0]["values"]
+    totals = set(spec.get("totals") or [])
+    out, run = [], 0.0
+    for c, v in zip(d["cats"], vals):
+        if v is None:
+            continue
+        if c in totals:
+            out.append({"cat": c, "value": v, "a": 0.0, "b": v, "kind": "total"})
+            run = v
+        else:
+            out.append({"cat": c, "value": v, "a": run, "b": run + v, "kind": "up" if v >= 0 else "down"})
+            run += v
+    show = spec.get("show_total")
+    if show is None:
+        show = not (out and out[-1]["kind"] == "total")
+    if show and out:
+        out.append({"cat": spec.get("total_label") or "합계", "value": run, "a": 0.0, "b": run, "kind": "total", "auto": True})
+    return out
+
+
+def bubble_data(table, spec):
+    """거품: x·y·크기(spec.size) 숫자 열 + 점 이름(spec.label, 범주 열) + 색 그룹(spec.group). 크기가 0 이하인 점은 뺀다"""
+    xs, ys = col_nums(table, spec["x"]), col_nums(table, spec["ys"][0])
+    zs = col_nums(table, spec["size"]) if spec.get("size") else [1.0] * len(xs)
+    lab = col_values(table, spec["label"]) if spec.get("label") else [""] * len(xs)
+    gs = col_values(table, spec["group"]) if spec.get("group") else None
+    levels = _levels(gs) if gs else [spec["ys"][0]]
+    hidden = set(spec.get("hidden") or [])
+    out = [{"name": g, "idx": i, "hidden": g in hidden, "points": []} for i, g in enumerate(levels)]
+    for i, (a, b, z) in enumerate(zip(xs, ys, zs)):
+        if a is None or b is None or z is None or z <= 0:
+            continue
+        out[levels.index(gs[i]) if gs else 0]["points"].append((a, b, z, lab[i]))
+    return out
+
+
+_OHLC = {"open": r"(시가|시초가|open(ing)?( price)?|o)", "high": r"(고가|최고가|high( price)?|h)",
+         "low": r"(저가|최저가|low( price)?|l)", "close": r"(종가|close|closing( price)?|adj\.? ?close|c)"}
+_VOLUME = re.compile(r"^(거래량|거래대금|volume|vol)$", re.I)
+
+
+def find_ohlc(table):
+    """시가·고가·저가·종가(open/high/low/close) 숫자 열 4개를 그 순서로. 없으면 None. 거래량 열은 두 번째 값"""
+    nums = [c["name"] for c in table["columns"] if c["type"] == "num"]
+    got = {}
+    for k, pat in _OHLC.items():
+        for n in nums:
+            if re.fullmatch(pat, n.strip(), re.I) and n not in got.values():
+                got[k] = n
+                break
+    if len(got) < 4:
+        return None, None
+    vol = next((n for n in nums if _VOLUME.match(n.strip())), None)
+    return [got["open"], got["high"], got["low"], got["close"]], vol
+
+
+def squarify(items, x, y, w, h):
+    """트리맵 배치(Bruls 등의 squarified) — items: [(키, 값>0)] 큰 값 먼저. 반환: [(키, 값, x, y, w, h)]"""
+    items = [(k, v) for k, v in items if v and v > 0]
+    tot = sum(v for _, v in items)
+    if not items or w <= 0 or h <= 0:
+        return []
+    scale = w * h / tot
+    rest = [(k, v * scale, v) for k, v in items]
+    out = []
+
+    def worst(row, side):
+        s = sum(a for _, a, _ in row)
+        mx, mn = max(a for _, a, _ in row), min(a for _, a, _ in row)
+        return max(side * side * mx / (s * s), (s * s) / (side * side * mn))
+    while rest:
+        side = min(w, h)
+        row = [rest.pop(0)]
+        while rest and worst(row + [rest[0]], side) <= worst(row, side):
+            row.append(rest.pop(0))
+        s = sum(a for _, a, _ in row)
+        if w >= h:  # 왼쪽에 세로 줄
+            cw = s / h
+            yy = y
+            for k, a, v in row:
+                hh = a / cw
+                out.append((k, v, x, yy, cw, hh))
+                yy += hh
+            x, w = x + cw, w - cw
+        else:  # 위에 가로 줄
+            rh = s / w
+            xx = x
+            for k, a, v in row:
+                ww = a / rh
+                out.append((k, v, xx, y, ww, rh))
+                xx += ww
+            y, h = y + rh, h - rh
+    return out
+
+
+def jo(word, with_final, without_final):
+    """받침 따라 조사 고르기: jo('실적', '을', '를') → '실적을'. 마지막 글자가 한글이 아니면 받침 없는 쪽"""
+    ch = (word or " ").rstrip()[-1:]
+    fin = "가" <= ch <= "힣" and (ord(ch) - 0xAC00) % 28
+    return word + (with_final if fin else without_final)
 
 
 def wa(word):
@@ -698,6 +827,10 @@ def recommend(table, limit=12):
             add("panels", "단위가 다른 두 계열 — 축을 나눠 위아래 두 그래프로", 72, x=x_cat,
                 ys=[by_unit[units[0]][0], by_unit[units[1]][0]])
 
+    # ── 새 종류 규칙 ──
+    _new_kind_rules(table, add, x_time=x_time, x_cat=x_cat, group=group, nx=nx, main_ys=main_ys, main_unit=main_unit,
+                    by_unit=by_unit, nums=nums, cats=cats, n=n, nonneg=nonneg)
+
     # 숫자 열 쌍 → 산점도 (상관 강한 순 2개)
     pairs = []
     if len(nums) >= 2 and n >= (12 if x_time else 8):
@@ -739,6 +872,10 @@ def recommend(table, limit=12):
     if not out and nums:  # 범주 열이 없고 행이 적음 → 행 번호 기준 막대
         add("col", "행 순서대로 값 비교", 50, x=None, ys=nums[:1])
 
+    ohlc, _vol = find_ohlc(table)
+    if ohlc:  # 시가·고가·저가·종가를 쌓거나 합치는 그림은 뜻이 없음
+        out[:] = [o for o in out if not (o["kind"] in ("col_stack", "col_stack100", "area_stack", "bar_stack", "heatmap", "col_group", "index")
+                                         and len(set(o.get("ys") or []) & set(ohlc)) >= 2)]
     out.sort(key=lambda s: -s["score"])
     out = out[:limit]
     for i, s in enumerate(out):
@@ -748,6 +885,144 @@ def recommend(table, limit=12):
         s.setdefault("legend", "top")
         s.setdefault("labels", "auto")
     return out
+
+
+_HINT_RADAR = re.compile(r"(역량|평가|점수|능력|지표|항목별|만족도|score|skill|rating)", re.I)
+_HINT_WATER = re.compile(r"(증감|손익|변동|변화|차이|증가|감소|기여|요인|delta|change|profit|loss|variance)", re.I)
+_HINT_FUNNEL = re.compile(r"(단계|퍼널|깔때기|전환|방문|유입|가입|구매|결제|지원|합격|서류|면접|stage|funnel|visit|signup|purchase)", re.I)
+_HINT_STEP = re.compile(r"(금리|이율|요율|요금|단가|세율|정원|기준|등급|rate|price|tariff|level)", re.I)
+_HINT_TARGET = re.compile(r"(목표|계획|기준치|target|goal|plan|budget)", re.I)
+_HINT_ACTUAL = re.compile(r"(실적|실제|달성|결과|actual|result)", re.I)
+_HINT_LINE = re.compile(r"(목표|계획|예산|target|plan|budget|quota)", re.I)
+_ADDITIVE = re.compile(r"(^$|원$|명$|건$|개$|곳$|가구$|대$|톤$|^t$|Wh$|^%$|회$|주$|ha$|㎡$|m2$)")  # 더해서 '전체'가 되는 양
+_HINT_PAIR = re.compile(r"(전|후|이전|이후|before|after|남|여|상반기|하반기|목표|실적|계획|예산|결산)", re.I)
+_HINT_CYCLE = re.compile(r"^(\d{1,2}\s*월|[1-4]\s*분기|[월화수목금토일](요일)?|[동서남북]{1,3}|N|NE|E|SE|S|SW|W|NW|\d{1,2}\s*시)$", re.I)
+
+
+def _monotone_down(vals):
+    vs = [v for v in vals if v is not None]
+    return len(vs) >= 3 and all(a >= b for a, b in zip(vs, vs[1:])) and vs[-1] > 0 and vs[0] / vs[-1] >= 1.5
+
+
+def _new_kind_rules(table, add, *, x_time, x_cat, group, nx, main_ys, main_unit, by_unit, nums, cats, n, nonneg):
+    """방사형·스파크라인·캔들스틱·폭포·깔때기·거품·계단선·막대사탕·덤벨·트리맵·불릿·로즈·누적+선·반원 도넛"""
+    k = len(main_ys)
+    y0 = main_ys[0] if main_ys else None
+    # 캔들스틱: 날짜 + 시가·고가·저가·종가
+    ohlc, vol = find_ohlc(table)
+    if ohlc and (x_time or x_cat) and n >= 3:
+        xx = x_time or x_cat
+        add("candlestick", f"{'·'.join(ohlc)} 열이 있어 기간마다 시작·끝·범위를 캔들로" + (f" — {jo(vol, '은', '는')} 아래 막대로" if vol else ""),
+            99, x=xx, ys=ohlc, **({"volume": vol} if vol else {}))
+    # 불릿: 실적 + 목표
+    tgt = next((c for c in nums if _HINT_TARGET.search(c)), None)
+    act = next((c for c in nums if c != tgt and _HINT_ACTUAL.search(c)), None)
+    if tgt and not act:
+        act = next((c for c in nums if c != tgt and unit_of(table, c) == unit_of(table, tgt)), None)
+    xb = x_cat or x_time
+    if tgt and act and xb and not group and nx <= 20 and unit_of(table, tgt) == unit_of(table, act):
+        add("bullet", f"{jo(act, '을', '를')} 막대로, {jo(tgt, '을', '를')} 가로 눈금으로 — 항목마다 목표 달성 여부가 바로 보임", 95, x=xb, ys=[act], target=tgt)
+    # 누적 막대 + 꺾은선: 같은 단위 구성 열 2개 이상 + 목표·평균 같은 기준 열
+    line_c = next((c for c in nums if _HINT_LINE.search(c)), None)
+    if line_c and xb and not group and nx <= 24:
+        parts = [c for c in by_unit.get(unit_of(table, line_c), []) if c != line_c and c != act][:6]
+        if len(parts) >= 2 and nonneg(parts) and _ADDITIVE.search(unit_of(table, line_c)):
+            add("stack_line", f"{'·'.join(parts[:3])}{'…' if len(parts) > 3 else ''} 누적 막대에 {jo(line_c, '을', '를')} 꺾은선으로 겹쳐 합계와 기준을 비교",
+                82, x=xb, ys=parts, y2=line_c)
+    if not y0:
+        return
+    vals0 = [v for v in col_nums(table, y0) if v is not None]
+    pos0 = bool(vals0) and all(v > 0 for v in vals0)
+    xs_cat = col_values(table, x_cat) if x_cat else []
+    # 방사형: 항목(축) 3~12개, 같은 단위 계열 1~5개
+    if x_cat and not group and 3 <= nx <= 12 and 1 <= k <= 5 and nonneg(main_ys[:5]) and x_cat != x_time:
+        hint = bool(_HINT_RADAR.search(x_cat + " " + " ".join(main_ys) + " " + (table.get("title") or "")))
+        if hint or k >= 2:
+            add("radar", f"{x_cat} {nx}개를 축으로 놓고 {'·'.join(main_ys[:3])}{'…' if k > 3 else ''}의 모양(강점·약점)을 비교",
+                (88 if hint else 58) if k >= 2 else 72, x=x_cat, ys=main_ys[:5])
+    # 스파크라인: 시간축 + 계열 3개 이상(또는 그룹 3개 이상) — 계열마다 작은 추세선
+    if x_time and nx >= 6:
+        if group:
+            gl = len(_levels(col_values(table, group)))
+            if gl >= 3:
+                add("sparkline", f"{group} {gl}개마다 {y0} 추세를 작은 선으로 나란히 — 계열이 많아도 겹치지 않음", 70 + min(gl, 8), x=x_time, ys=[y0], group=group)
+        elif len(nums) >= 3:
+            ys_sp = nums[:12]
+            nu = len({unit_of(table, y) for y in ys_sp})
+            add("sparkline", f"계열 {len(ys_sp)}개 추세를 각자 눈금으로 작게 나란히 — " + (f"단위가 {nu}가지라 한 축에 못 담는 흐름을 비교" if nu >= 3 else "계열이 많아도 겹치지 않음"),
+                92 if nu >= 3 else 66 + min(len(ys_sp), 10) * 2, x=x_time, ys=ys_sp)
+    # 계단선: 값이 가끔만 바뀌는 시계열(금리·요금 등)
+    if x_time and not group and nx >= 6:
+        for y in main_ys[:2]:
+            vs = [v for v in col_nums(table, y) if v is not None]
+            same = sum(1 for a, b in zip(vs, vs[1:]) if a == b)
+            if len(vs) >= 6 and same >= max(2, 0.3 * (len(vs) - 1)):
+                add("step", f"{y} 값이 일정 기간 유지되다 바뀌어 계단 모양으로 — 바뀐 시점이 분명히 보임",
+                    97 if _HINT_STEP.search(y) else 80, x=x_time, ys=[y])
+                break
+    # 폭포: 증감(양·음 섞임) 한 계열
+    xw = x_cat or x_time
+    if xw and not group and vals0 and any(v < 0 for v in vals0) and any(v > 0 for v in vals0) and 3 <= nx <= 30:
+        names = [str(c) for c in _levels(col_values(table, xw))]
+        totals = [c for c in names if TOTAL_NAME.search(c)]
+        hint = _HINT_WATER.search(y0 + " " + (table.get("title") or "")) or totals
+        sp = {"x": xw, "ys": [y0]}
+        if totals:
+            sp["totals"] = totals
+        end = names[-1] if names[-1] in totals else "합계"
+        add("waterfall", f"{y0} 증감이 쌓여 {end}에 이르는 과정을 — 늘어난 몫·줄어든 몫을 색으로 구분",
+            90 if hint else 66, **sp)
+    # 깔때기: 차례대로 줄어드는 단계 값
+    if x_cat and not group and 3 <= nx <= 10 and pos0 and len(vals0) == nx and _monotone_down(col_nums(table, y0)):
+        hint = _HINT_FUNNEL.search(x_cat + " " + y0 + " " + " ".join(xs_cat) + " " + (table.get("title") or ""))
+        add("funnel", f"{x_cat} {nx}단계를 지나며 {jo(y0, '이', '가')} 줄어드는 비율(전환율)을 깔때기로", 94 if hint else 74, x=x_cat, ys=[y0])
+    # 덤벨: 같은 단위 두 계열(두 시점·두 집단) 비교
+    if xb and not x_time and 3 <= nx <= 20:
+        pair = None
+        if group:
+            gl = _levels(col_values(table, group))
+            if len(gl) == 2:
+                pair = {"ys": [y0], "group": group}
+                nm = f"{gl[0]}·{gl[1]}"
+        elif k >= 2:
+            two = (main_ys[:2] if k == 2 else ([act, tgt] if tgt and act else None))
+            if two:
+                pair = {"ys": two}
+                nm = "·".join(two)
+        if pair:
+            hint = _HINT_PAIR.search(nm) or all(is_date(p) for p in nm.split("·"))
+            add("dumbbell", f"{x_cat}마다 {nm} 두 값을 점으로 잇고 그 차이를 길이로 비교", 84 if hint else 68, x=x_cat, **pair)
+    # 막대사탕·트리맵·로즈·반원 도넛: 범주 + 한 계열
+    if x_cat and not group and x_cat != x_time:
+        if 8 <= nx <= 40:
+            add("lollipop", f"항목 {nx}개를 막대 대신 점과 가는 줄기로 — 많은 항목도 가볍게 크기순 비교", 64, x=x_cat, ys=[y0], sort="desc")
+        ids = sum(1 for c in xs_cat if re.fullmatch(r"[A-Za-z]{0,3}[-_ ]?\d+", str(c).strip())) >= 0.6 * max(1, len(xs_cat))
+        scores = _HINT_RADAR.search(x_cat + " " + y0 + " " + (table.get("title") or ""))  # 점수·평가는 더해서 '전체'가 안 됨
+        if pos0 and 6 <= nx <= 60 and len(vals0) == nx and _ADDITIVE.search(unit_of(table, y0)) and not ids and not scores:
+            add("treemap", f"{nx}개 항목이 전체에서 차지하는 몫을 넓이로 — 원그래프로는 많은 항목", 78 if nx > 6 else 68, x=x_cat, ys=[y0])
+        if 2 <= nx <= 6 and pos0 and len(vals0) == nx:
+            add("semi_doughnut", f"{nx}개 항목 구성비를 반원으로 — 좁은 자리(보고서 요약 칸)에 맞음", 64, x=x_cat, ys=[y0])
+    xr = x_cat or x_time
+    if xr and not group and 6 <= nx <= 12 and vals0 and all(v >= 0 for v in vals0):
+        cyc = [str(c).strip() for c in _levels(col_values(table, xr))]
+        if all(_HINT_CYCLE.match(c) for c in cyc):
+            add("rose", f"{jo(xr, '이', '가')} 한 바퀴 도는 주기라 원 둘레에 놓고 {y0} 크기를 부채꼴 넓이로", 62, x=xr, ys=[y0])
+    # 거품: 숫자 열 3개 — x·y + 크기, 점 이름은 범주 열
+    if len(nums) >= 3 and 4 <= n <= 80 and not x_time:
+        best = None
+        for i, a in enumerate(nums):
+            for b in nums[i + 1:]:
+                lr = linreg(col_nums(table, a), col_nums(table, b))
+                if lr and (best is None or abs(lr["r"]) > best[0]):
+                    best = (abs(lr["r"]), a, b)
+        if best:
+            _, a, b = best
+            size = next((c for c in nums if c not in (a, b) and all(v is None or v > 0 for v in col_nums(table, c))), None)
+            if size and len({unit_of(table, c) for c in (a, b, size)}) >= 2:
+                sp = {"x": a, "ys": [b], "size": size}
+                if x_cat:
+                    sp["label"] = x_cat
+                add("bubble", f"{wa(a)} {b}의 관계에 {jo(size, '을', '를')} 원 크기로 더해 세 값을 한 번에", 76 if n <= 30 else 66, **sp)
 
 
 def default_title(table, spec):
@@ -763,6 +1038,24 @@ def default_title(table, spec):
         return f"{'·'.join(ys[:3])} 증감 비교 (첫 값=100)"
     if k == "dual":
         return f"{spec['x']}별 {'·'.join(ys[:2])}과 {spec.get('y2', '')}"
+    if k == "candlestick":
+        return f"{spec['x']}별 가격 흐름 (시가·고가·저가·종가)"
+    if k == "bubble":
+        return f"{wa(spec['x'])} {ys[0]}의 관계 (원 크기: {spec.get('size') or '-'})"
+    if k == "bullet":
+        return f"{spec['x']}별 {ys[0]}과 {spec.get('target', '목표')}"
+    if k == "stack_line":
+        return f"{spec['x']}별 {'·'.join(ys[:3])} 구성과 {spec.get('y2', '')}"
+    if k == "waterfall":
+        return f"{ys[0]} 증감 흐름"
+    if k == "funnel":
+        return f"{spec['x']}별 {ys[0]} 전환"
+    if k == "sparkline":
+        return f"{spec['x']}별 추세" + (f" — {spec['group']}별 {ys[0]}" if spec.get("group") else "")
+    if k == "dumbbell" and not spec.get("group"):
+        return f"{spec['x']}별 {wa(ys[0])} {ys[1] if len(ys) > 1 else ''} 비교"
+    if k in ("treemap", "semi_doughnut"):
+        return f"{spec['x']}별 {ys[0]} 구성"
     if spec.get("group"):
         return f"{spec['x']}·{spec['group']}별 {ys[0]}"
     if k in ("pie", "doughnut"):

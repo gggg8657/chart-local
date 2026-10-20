@@ -368,8 +368,14 @@ async function rerender(c) {
 
 // ── 3. 편집
 const KIND_GROUPS = {
-  cat: ['dual', 'col', 'bar', 'col_group', 'bar_group', 'col_stack', 'bar_stack', 'col_stack100', 'line', 'area', 'area_stack', 'pie', 'doughnut', 'heatmap', 'panels', 'index'],
-  other: ['scatter', 'hist', 'box']};
+  cat: ['dual', 'col', 'bar', 'col_group', 'bar_group', 'col_stack', 'bar_stack', 'col_stack100', 'line', 'area', 'area_stack', 'pie', 'doughnut', 'heatmap', 'panels', 'index',
+        'radar', 'sparkline', 'candlestick', 'waterfall', 'funnel', 'step', 'lollipop', 'dumbbell', 'treemap', 'bullet', 'rose', 'stack_line', 'semi_doughnut'],
+  other: ['scatter', 'hist', 'box', 'bubble']};
+const NO_SORT = ['waterfall', 'candlestick', 'sparkline', 'step', 'treemap'];  // 순서 자체가 뜻이거나 늘 큰 값부터
+// 계열 이름 대신 뜻으로 색을 고르는 종류(색 순서 = 서버 colors 순서)
+const ROLE_COLORS = {waterfall: ['증가', '감소', '합계'], candlestick: ['상승 (종가 ≥ 시가)', '하락 (종가 < 시가)']};
+const YS_HINT = {candlestick: '시가·고가·저가·종가 4개를 그 순서로', lollipop: '첫 열만 사용', dumbbell: '앞의 두 열을 비교', waterfall: '첫 열 = 증감 값',
+  funnel: '첫 열 = 단계별 값', bullet: '실적(막대) 열', stack_line: '누적 막대로 쌓을 열', bubble: 'y 축 열', treemap: '첫 열 = 넓이', rose: '첫 열만 사용', semi_doughnut: '첫 열만 사용'};
 function openEdit(id, keepScroll) {
   S.edit = id;
   const c = S.cands.find(x => x.id === id);
@@ -385,15 +391,20 @@ function openEdit(id, keepScroll) {
   const seriesNames = c.group ? levels(c.group) : (isDual && c.y2 ? [...ys.filter(y => y !== c.y2), c.y2] : ys);
   const hidden = c.hidden || [];
   const pal = S.meta.palette;
-  const isPie = c.kind === 'pie' || c.kind === 'doughnut';
+  const isPie = c.kind === 'pie' || c.kind === 'doughnut' || c.kind === 'semi_doughnut';
   const isCat = KIND_GROUPS.cat.includes(c.kind);
-  const colorNames = isPie ? levels(c.x) : seriesNames;
+  const roleCols = ROLE_COLORS[c.kind];
+  const colorNames = c.kind === 'treemap' ? [] : roleCols || (isPie ? levels(c.x) : seriesNames);
+  const kpal = (S.meta.kind_colors || {})[c.kind] || pal;
+  const xNum = c.kind === 'scatter' || c.kind === 'bubble';
+  const wfTot = c.kind === 'waterfall' ? levels(c.x) : [];
+  const stSeg = c.show_total === true ? '1' : c.show_total === false ? '0' : 'auto';
   $('#ctrl').innerHTML = `
     <label>제목<input data-f="title" value="${esc(c.title)}"></label>
     <label>부제 (출처·기준일 등)<input data-f="subtitle" value="${esc(c.subtitle || '')}" placeholder="예: 2025년 결산 기준"></label>
     <label>그래프 종류<select data-f="kind">${Object.entries(S.meta.kinds).map(([k, v]) => `<option value="${k}" ${k === c.kind ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
     <div class="row">
-      <label>${c.kind === 'scatter' ? 'x (숫자 열)' : 'x 축 / 항목'}<select data-f="x">${opt(c.kind === 'scatter' ? nums : all, c.x, c.kind === 'hist' || c.kind === 'box' ? '(없음)' : null)}</select></label>
+      <label>${xNum ? 'x (숫자 열)' : 'x 축 / 항목'}<select data-f="x">${opt(xNum ? nums : all, c.x, c.kind === 'hist' || c.kind === 'box' ? '(없음)' : null)}</select></label>
       <label>나눌 열 (그룹)<select data-f="group">${opt(all.filter(a => a !== c.x), c.group, '(없음)')}</select></label>
     </div>
     ${isDual ? `<div class="row"><label>오른쪽 축 열<select data-f="y2">${opt(nums, c.y2)}</select></label>
@@ -401,19 +412,27 @@ function openEdit(id, keepScroll) {
       <label>모양${seg('dual_shape', [['bar_line', '왼쪽 막대 + 오른쪽 선'], ['line_line', '선 + 선']])}</label>
       <label>축 시작<span class="hint">0선은 음수가 있을 때 두 축이 맞춰집니다</span>${seg('zero_base', [['1', '둘 다 0부터'], ['', '오른쪽 축은 데이터 범위']])}</label>
       <div class="note">두 축 눈금이 서로 독립입니다 — 선과 막대의 높이 비교로 추세를 판단하지 않도록 주의</div>` : ''}
-    <label>${isDual ? '왼쪽 축 열 (1~2개 권장)' : '값 열'} <span class="hint">(${c.group ? '그룹이 있으면 첫 열만 사용' : '체크한 열이 계열'})</span>
+    ${c.kind === 'bullet' ? `<div class="row"><label>목표 열 (가로 눈금)<select data-f="target">${opt(nums, c.target, '(없음)')}</select></label></div>` : ''}
+    ${c.kind === 'stack_line' ? `<div class="row"><label>꺾은선 열 (같은 값 축)<select data-f="y2">${opt(nums, c.y2)}</select></label></div>` : ''}
+    ${c.kind === 'candlestick' ? `<div class="row"><label>거래량 열 (아래 막대)<select data-f="volume">${opt(nums, c.volume, '(없음)')}</select></label></div>` : ''}
+    ${c.kind === 'bubble' ? `<div class="row"><label>원 크기 열<select data-f="size">${opt(nums, c.size, '(없음)')}</select></label>
+      <label>점 이름 열<select data-f="label">${opt(all, c.label, '(없음)')}</select></label></div>` : ''}
+    ${c.kind === 'waterfall' ? `<label>합계 막대로 볼 항목 <span class="hint">(0부터 그리고 누적을 그 값으로 맞춤 — 예: 기초·기말 잔액)</span>
+      <div class="series">${wfTot.map(n => `<span class="s"><input type="checkbox" data-total="${esc(n)}" ${(c.totals || []).includes(n) ? 'checked' : ''}> ${esc(n)}</span>`).join('')}</div></label>
+      <label>끝에 누적 합계 막대<div class="seg" data-seg="show_total">${[['auto', '자동'], ['1', '붙임'], ['0', '안 붙임']].map(([v, l]) => `<button data-v="${v}" class="${stSeg === v ? 'on' : ''}">${l}</button>`).join('')}</div></label>` : ''}
+    <label>${isDual ? '왼쪽 축 열 (1~2개 권장)' : '값 열'} <span class="hint">(${c.group ? '그룹이 있으면 첫 열만 사용' : (YS_HINT[c.kind] || '체크한 열이 계열')})</span>
       <div class="series">${nums.map(n => `<span class="s"><input type="checkbox" data-y="${esc(n)}" ${ys.includes(n) ? 'checked' : ''}> ${esc(n)}</span>`).join('')}</div></label>
     <label>${isPie ? '조각 색' : '계열 표시·색'} <span class="hint">끄면 그래프에서 빠지고 색은 그대로 유지</span>
       <span class="hint scrhint">왼쪽 칸 = 문서·내려받기에 들어가는 색(고른 색 그대로) · ● = 어두운 화면 그래프에서 보이는 색</span>
-      <div class="series">${colorNames.map((n, i) => { const col = (c.colors && c.colors[i]) || pal[i % pal.length], sc = SCREEN_COL[String(col).toLowerCase()];
+      <div class="series">${colorNames.map((n, i) => { const col = (c.colors && c.colors[i]) || kpal[i % kpal.length], sc = SCREEN_COL[String(col).toLowerCase()];
         return `<span class="s"><input type="color" data-col="${i}" value="${col}" title="문서·내려받기에 들어가는 색"><i class="scr${sc ? '' : ' same'}" data-scr="${i}" style="background:${sc || col}" title="어두운 화면 그래프에서는 이 색으로 보임 — 문서에는 ${col}"></i>
-        ${isPie ? '' : `<input type="checkbox" data-hide="${esc(n)}" ${hidden.includes(n) ? '' : 'checked'}>`} ${esc(n)}</span>`; }).join('')}</div>
+        ${isPie || roleCols ? '' : `<input type="checkbox" data-hide="${esc(n)}" ${hidden.includes(n) ? '' : 'checked'}>`} ${esc(n)}</span>`; }).join('')}</div>
       <button class="sm" id="b-palreset" style="align-self:flex-start">기본 색으로</button></label>
     <div class="row"><label>x 축 이름<input data-f="x_title" value="${esc(c.x_title ?? '')}" placeholder="(자동)"></label>
       <label>y 축 이름<input data-f="y_title" value="${esc(c.y_title ?? '')}" placeholder="(자동)"></label></div>
     <label>범례${seg('legend', [['top', '위'], ['bottom', '아래'], ['right', '오른쪽'], ['none', '숨김']])}</label>
     <label>값 라벨${seg('labels', [['auto', '자동'], ['all', '모두'], ['none', '없음']])}</label>
-    ${isCat ? `<label>정렬${seg('sort', [['none', '원래 순서'], ['desc', '큰 값부터'], ['asc', '작은 값부터']])}</label>` : ''}
+    ${isCat && !NO_SORT.includes(c.kind) ? `<label>정렬${seg('sort', [['none', '원래 순서'], ['desc', '큰 값부터'], ['asc', '작은 값부터']])}</label>` : ''}
     <div class="row">
       ${c.kind === 'scatter' ? `<label>추세선<select data-f="trend"><option value="1" ${c.trend ? 'selected' : ''}>표시</option><option value="" ${c.trend ? '' : 'selected'}>숨김</option></select></label>` : ''}
       ${c.kind === 'hist' ? `<label>구간 수<input type="number" min="3" max="40" data-f="bins" value="${c.bins || ''}" placeholder="자동"></label>` : ''}
@@ -432,16 +451,22 @@ function openEdit(id, keepScroll) {
     if (f === 'trend') v = !!v; if (f === 'bins' || f === 'top') v = +v || 0;
     if ((f === 'x_title' || f === 'y_title') && v === '') { delete c[f]; upd(); return; }
     if (f === 'group' || f === 'x') v = v || null;
+    if (['target', 'volume', 'size', 'label'].includes(f) && !v) { delete c[f]; upd(); return; }
     if (f === 'title') c.edited_title = true;
     if ((f === 'x_title' || f === 'y2_title') && v === '') { delete c[f]; upd(); return; }
     c[f] = v;
+    if (f === 'kind') kindDefaults(c, v, nums);
     if (f === 'kind' && v === 'dual' && !c.y2) { c.y2 = nums.find(n => !(c.ys || []).includes(n)) || nums[nums.length - 1]; c.ys = (c.ys || []).filter(y => y !== c.y2).slice(0, 2); }
     if (f === 'y2') { c.ys = (c.ys || []).filter(y => y !== v); upd(); setTimeout(() => openEdit(id, true), 200); return; }
     if (f === 'kind' || f === 'group' || f === 'x') { c.name = S.meta.kinds[c.kind]; c.hidden = []; upd(); setTimeout(() => openEdit(id, true), 200); return; }
     upd();
   });
+  $$('#ctrl [data-total]').forEach(el => el.onchange = () => {
+    const n = el.dataset.total; c.totals = (c.totals || []).filter(v => v !== n); if (el.checked) c.totals.push(n); upd();
+  });
   $$('#ctrl [data-seg] button').forEach(b => b.onclick = () => {
     const k = b.parentNode.dataset.seg; c[k] = k === 'zero_base' ? b.dataset.v === '1' : b.dataset.v;
+    if (k === 'show_total') { if (b.dataset.v === 'auto') delete c.show_total; else c.show_total = b.dataset.v === '1'; }
     $$(`#ctrl [data-seg="${k}"] button`).forEach(x => x.classList.toggle('on', x === b)); upd();
   });
   $$('#ctrl [data-y]').forEach(el => el.onchange = () => {
@@ -464,6 +489,18 @@ function openEdit(id, keepScroll) {
     n.title = c.title + ' (변형)'; S.cands.splice(S.cands.indexOf(c) + 1, 0, n); drawGallery(); openEdit(n.id);
   };
   if (!keepScroll) $('#p-edit').scrollIntoView({block: 'start'});
+}
+// 종류를 바꿀 때 그 종류에 필요한 열을 채워 둠(서버 추천과 같은 규칙의 간단판)
+function kindDefaults(c, k, nums) {
+  const ys = c.ys || [], other = n => !ys.includes(n);
+  if (k === 'bullet' && !c.target) c.target = nums.find(n => /목표|계획|target|goal|plan/i.test(n) && other(n)) || nums.find(other) || null;
+  if (k === 'stack_line' && (!c.y2 || ys.includes(c.y2))) { c.y2 = nums.find(n => /목표|계획|예산|target|plan/i.test(n)) || nums.find(other) || nums[nums.length - 1]; c.ys = ys.filter(y => y !== c.y2); }
+  if (k === 'bubble') {
+    if (!nums.includes(c.x)) c.x = nums[0] || null;
+    c.ys = [ys.find(y => y !== c.x) || nums.find(n => n !== c.x)].filter(Boolean);
+    if (!c.size || c.size === c.x || c.ys.includes(c.size)) c.size = nums.find(n => n !== c.x && !c.ys.includes(n)) || null;
+    if (!c.label) c.label = (S.table.columns.find(x => x.type === 'cat') || {}).name || null;
+  }
 }
 // 어두운 테마 화면 그래프의 계열색(위 CSS --c1…--c8 과 같게): 문서 색(svg.py PAL) → 화면 색. 여기 없는 색(직접 고른 색)은 화면도 같은 색
 const SCREEN_COL = {'#2a78d6': '#3987e5', '#eb6834': '#d95926', '#1baf7a': '#199e70', '#eda100': '#c98500', '#e87ba4': '#d55181', '#4a3aa7': '#9085e9', '#e34948': '#e66767'};

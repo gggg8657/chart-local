@@ -214,6 +214,8 @@ def _swatch(g, x, y, c, shape):
               f'<circle cx="{x + 7:.1f}" cy="{y:.1f}" r="3.5" fill="{c}" stroke="{SURFACE}" stroke-width="1.5"/>')
     elif shape == "dot":
         g.add(f'<circle cx="{x + 6:.1f}" cy="{y:.1f}" r="5" fill="{c}"/>')
+    elif shape == "tick":
+        g.add(f'<line x1="{x:.1f}" y1="{y:.1f}" x2="{x + 14:.1f}" y2="{y:.1f}" stroke="{c}" stroke-width="3.5" stroke-linecap="butt"/>')
     else:
         g.add(f'<rect x="{x:.1f}" y="{y - 6:.1f}" width="13" height="12" rx="3" fill="{c}"/>')
 
@@ -534,20 +536,26 @@ def render_pie(table, spec, w, h):
     name_w = max(tw(c, 12.5) for c, _ in items)
     num_w = max(tw(vtxt(v), 12) for _, v in items)
     leg_w = min(380, name_w + num_w + 46)
-    r = min((x1 - x0 - leg_w - 30) / 2, (y1 - y0) / 2 - 4)
-    cx, cy = x0 + 10 + r, (y0 + y1) / 2
-    hole = 0.58 if spec["kind"] == "doughnut" else 0
-    ang = -math.pi / 2
+    semi = spec["kind"] == "semi_doughnut"
+    if semi:  # 반원: 왼쪽(180°)에서 위를 지나 오른쪽까지, 가운데 아래에 합계
+        r = min((x1 - x0 - leg_w - 30) / 2, y1 - y0 - 46)
+        cx, cy = x0 + 10 + r, y0 + 8 + r
+    else:
+        r = min((x1 - x0 - leg_w - 30) / 2, (y1 - y0) / 2 - 4)
+        cx, cy = x0 + 10 + r, (y0 + y1) / 2
+    hole = 0.58 if spec["kind"] in ("doughnut", "semi_doughnut") else 0
+    sweep = math.pi if semi else 2 * math.pi
+    ang = math.pi if semi else -math.pi / 2
     labels = spec.get("labels") or "auto"
     for i, (c, v) in enumerate(items):
         col = color_for(spec, i)
         frac = v / tot
-        a2 = ang + frac * 2 * math.pi
-        large = 1 if frac > 0.5 else 0
+        a2 = ang + frac * sweep
+        large = 1 if frac * sweep > math.pi else 0
         p = lambda a, rr: (cx + rr * math.cos(a), cy + rr * math.sin(a))
         (ax, ay), (bx, by) = p(ang, r), p(a2, r)
         tp = tip(c, core.fmt(v, dec) + (" " + unit if unit and unit != "%" else ("%" if unit == "%" else "")), f"{frac * 100:.1f}%")
-        if frac >= 0.9999:
+        if frac >= 0.9999 and not semi:
             path = f"M{cx - r:.1f},{cy:.1f}a{r:.1f},{r:.1f} 0 1,0 {2 * r:.1f},0a{r:.1f},{r:.1f} 0 1,0 {-2 * r:.1f},0Z"
         elif hole:
             (cx2, cy2), (dx, dy) = p(a2, r * hole), p(ang, r * hole)
@@ -562,17 +570,22 @@ def render_pie(table, spec, w, h):
             lx, ly = p(mid, rr)
             g.text(lx, ly + 4.5, f"{frac * 100:.0f}%" if frac >= 0.1 else f"{frac * 100:.1f}%", 12.5, text_on(col), "middle", 600, on_bg(col))
         ang = a2
-    if hole:
+    if semi:
+        g.text(cx, cy - 8, core.fmt(tot, dec) + ("%" if unit == "%" else ""), 20, INK, "middle", 600)
+        g.text(cx, cy + 12, f"합계{(' (' + unit + ')') if unit and unit != '%' else ''}", 12, INK2, "middle")
+    elif hole:
         g.text(cx, cy - 2, core.fmt(tot, dec) + ("%" if unit == "%" else ""), 20, INK, "middle", 600)
         g.text(cx, cy + 17, f"합계{(' (' + unit + ')') if unit and unit != '%' else ''}", 12, INK2, "middle")
     lx = cx + r + 34
-    ly = cy - len(items) * 22 / 2 + 11
+    ly = (cy - r / 2 if semi else cy) - len(items) * 22 / 2 + 11
     for i, (c, v) in enumerate(items):
         col = color_for(spec, i)
         g.add(f'<rect x="{lx:.1f}" y="{ly - 6:.1f}" width="12" height="12" rx="3" fill="{col}"/>')
         g.text(lx + 19, ly + 4.5, clip(c, 12.5, x1 - lx - num_w - 34), 12.5, INK)
         g.text(x1, ly + 4.5, vtxt(v), 12, INK2, "end")
         ly += 22
+    if semi:
+        g.h = min(h, int(max(cy + 34, ly + 10)))
     return g.out()
 
 
@@ -938,11 +951,703 @@ def render_dual(table, spec, w, h):
     return g.out()
 
 
+# ── 새 종류 공통: 범주 x 축 + 값 y 축 ─────────────────────────────────────────
+def _cat_axes(g, box, cats, lo, hi, ticks, step, unit, ytitle, xtitle):
+    """세로형 범주 플롯 틀. 반환: (px0, py0, py1, px1, band, cx(i), sy)"""
+    x0, y0, x1, y1 = box
+    n = max(1, len(cats))
+    room = x_label_room(cats, (x1 - x0 - 60) / n, xtitle)
+    px0, py0, sy = y_axis(g, (x0, y0, x1, y1 - room), lo, hi, ticks, step, unit, ytitle)
+    py1 = y1 - room
+    band = (x1 - px0) / n
+    cx = lambda i: px0 + band * (i + 0.5)
+    x_cat_labels(g, cats, lambda c: cx(cats.index(c)), band, py1, px0, x1, xtitle)
+    return px0, py0, py1, x1, band, cx, sy
+
+
+def _vis(d, role=None):
+    return [s for s in d["series"] if not s["hidden"] and s.get("role") == role]
+
+
+def _sfx(unit):
+    return "" if not unit or unit == "%" else " " + unit
+
+
+def _empty(g, w, h, msg="표시할 값이 없습니다"):
+    g.text(w / 2, h / 2, msg, 13, MUTED, "middle")
+    return g.out()
+
+
+def _ytitle(spec, series, unit):
+    t = axis_title(spec, "y_title", unit_title(series[0]["name"] if len(series) == 1 else "", unit))
+    if spec.get("y_title") and unit and f"({unit})" not in t:
+        t = f"{t} ({unit})"
+    return t
+
+
+# ── 방사형 ────────────────────────────────────────────────────────────────
+def render_radar(table, spec, w, h):
+    d = core.category_data(table, spec)
+    cats, series = d["cats"], _vis(d)
+    legend = [(s["name"], color_for(spec, s["idx"]), "line") for s in series]
+    g, (x0, y0, x1, y1) = frame(spec, w, h, legend)
+    n = len(cats)
+    if n < 3 or not series:
+        return _empty(g, w, h, "방사형은 항목(축)이 3개 이상 필요합니다")
+    vals = [v for s in series for v in s["values"] if v is not None]
+    if not vals:
+        return _empty(g, w, h)
+    unit = series[0].get("unit", "")
+    lo, hi, ticks, step = nice_domain(min(vals), max(vals), True, 4)
+    labw = min(120, max(tw(c, 12) for c in cats) + 10)
+    r = max(40, min((x1 - x0) / 2 - labw, (y1 - y0) / 2 - 24))
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2 + 2
+    ang = lambda i: -math.pi / 2 + 2 * math.pi * i / n
+    rad = lambda v: r * (v - lo) / ((hi - lo) or 1)
+    pt = lambda i, rr: (cx + rr * math.cos(ang(i)), cy + rr * math.sin(ang(i)))
+    for t in ticks:
+        if t <= lo + 1e-12:
+            continue
+        poly = " ".join(f"{x:.1f},{y:.1f}" for x, y in (pt(i, rad(t)) for i in range(n)))
+        g.add(f'<polygon points="{poly}" fill="none" stroke="{GRID if t < hi else BASE}" stroke-width="1"/>')
+    for i in range(n):
+        ex, ey = pt(i, r)
+        g.line(cx, cy, ex, ey, GRID, 1)
+    for i, c in enumerate(cats):
+        lx, ly = pt(i, r + 10)
+        ca = math.cos(ang(i))
+        anchor = "start" if ca > 0.25 else ("end" if ca < -0.25 else "middle")
+        dy = 4 + (6 * math.sin(ang(i)) if anchor == "middle" else 0)
+        g.text(lx, ly + dy, clip(c, 12, labw - 6), 12, INK2, anchor)
+    labels = spec.get("labels") or "auto"
+    dec = core.decimals_of(vals)
+    op = 0.14 if len(series) <= 3 else 0.07
+    for s in series:
+        col = color_for(spec, s["idx"])
+        pts = [pt(i, rad(v if v is not None else lo)) for i, v in enumerate(s["values"])]
+        g.add(f'<polygon points="{" ".join(f"{x:.1f},{y:.1f}" for x, y in pts)}" fill="{col}" fill-opacity="{op}" stroke="{col}" stroke-width="2" stroke-linejoin="round"/>')
+        for i, ((x, y), v) in enumerate(zip(pts, s["values"])):
+            a, t = tip(cats[i], s["name"] if len(series) > 1 else "", "값 없음" if v is None else core.fmt(v, dec, unit) + _sfx(unit))
+            g.add(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="3.5" fill="{col}" stroke="{SURFACE}" stroke-width="1.5" {a}>{t}</circle>')
+            if v is not None and (labels == "all" or (labels == "auto" and len(series) == 1 and n <= 10)):
+                ox, oy = math.cos(ang(i)) * 12, math.sin(ang(i)) * 12
+                g.text(x + ox, y + oy + 4, core.fmt(v, dec, unit), 10.5, INK, "middle")
+    halo = f'stroke="{SURFACE}" stroke-width="3" paint-order="stroke"'
+    for t, lab in zip(ticks, tick_fmt(ticks, step, unit)):  # 눈금 글자는 맨 위에 바탕색 테를 둘러 선·점과 겹쳐도 읽히게
+        if t <= lo + 1e-12:
+            continue
+        g.text(cx + 5, cy - rad(t) + 12, lab, 10.5, MUTED, "start", extra=halo)
+    return g.out()
+
+
+# ── 스파크라인 ──────────────────────────────────────────────────────────────
+def render_sparkline(table, spec, w, h):
+    d = core.category_data(table, spec)
+    cats, series = d["cats"], _vis(d)
+    g, (x0, y0, x1, y1) = frame(spec, w, h, [])
+    if not cats or not series:
+        return _empty(g, w, h)
+    labels = spec.get("labels") or "auto"
+    show_v = labels != "none"
+    m = len(series)
+    head_h = 20
+    row_h = max(30, min(56, (y1 - y0 - head_h) / m))
+    need = y0 + head_h + row_h * m + 14
+    if need > h:
+        g.h = int(need)
+    names = [unit_title(s["name"], s.get("unit", "")) for s in series]
+    nw = min(190, max(tw(nm, 12) for nm in names) + 12)
+    vw = 150 if show_v else 0
+    sx0, sx1 = x0 + nw, x1 - vw - 10
+    n = len(cats)
+    sx = lambda i: sx0 + (sx1 - sx0) * (i / (n - 1) if n > 1 else 0.5)
+    g.text(x0, y0 + 12, "계열", 11, MUTED)
+    g.text(sx0, y0 + 12, cats[0], 11, MUTED)
+    g.text(sx1, y0 + 12, cats[-1], 11, MUTED, "end")
+    if show_v:
+        g.text(x1 - vw + 70, y0 + 12, "마지막 값", 11, MUTED, "end")
+        g.text(x1, y0 + 12, "처음 대비", 11, MUTED, "end")
+    top = y0 + head_h
+    for j, s in enumerate(series):
+        ry = top + row_h * j
+        g.line(x0, ry, x1, ry, GRID, 1)
+        col = color_for(spec, s["idx"])
+        unit = s.get("unit", "")
+        vs = s["values"]
+        pv = [(i, v) for i, v in enumerate(vs) if v is not None]
+        g.text(x0, ry + row_h / 2 + 4, clip(names[j], 12, nw - 10), 12, INK2)
+        if not pv:
+            continue
+        lo, hi = min(v for _, v in pv), max(v for _, v in pv)
+        pad = 6
+        sy = lambda v: ry + row_h - pad - (v - lo) / ((hi - lo) or 1) * (row_h - 2 * pad) if hi > lo else ry + row_h / 2
+        dec = core.decimals_of([v for _, v in pv])
+        segs, cur, last = [], [], None
+        for i, v in pv:
+            if last is not None and i != last + 1:
+                segs.append(cur)
+                cur = []
+            cur.append((sx(i), sy(v)))
+            last = i
+        segs.append(cur)
+        for sg in segs:
+            g.add(f'<polyline points="{" ".join(f"{x:.1f},{y:.1f}" for x, y in sg)}" fill="none" stroke="{col}" stroke-width="1.75" stroke-linejoin="round" stroke-linecap="round"/>')
+        imax = max(pv, key=lambda p: p[1])[0]
+        imin = min(pv, key=lambda p: p[1])[0]
+        for i, v in pv:
+            a, t = tip(cats[i], s["name"], core.fmt(v, dec, unit) + _sfx(unit))
+            g.add(f'<circle cx="{sx(i):.1f}" cy="{sy(v):.1f}" r="6" fill="transparent" {a}>{t}</circle>')
+        if hi > lo:
+            for i in (imax, imin):
+                g.add(f'<circle cx="{sx(i):.1f}" cy="{sy(vs[i]):.1f}" r="2.5" fill="{SURFACE}" stroke="{col}" stroke-width="1.5"/>')
+        li, lv = pv[-1]
+        g.add(f'<circle cx="{sx(li):.1f}" cy="{sy(lv):.1f}" r="3.5" fill="{col}" stroke="{SURFACE}" stroke-width="1.5"/>')
+        if show_v:
+            g.text(x1 - vw + 70, ry + row_h / 2 + 4, core.fmt(lv, dec, unit) + ("" if unit == "%" else ""), 12, INK, "end", 600)
+            fv = pv[0][1]
+            if fv:
+                ch = (lv - fv) / abs(fv) * 100
+                arrow = "▲" if ch > 0.05 else ("▼" if ch < -0.05 else "–")
+                g.text(x1, ry + row_h / 2 + 4, f"{arrow} {abs(ch):.1f}%", 11.5, INK2, "end")
+    g.line(x0, top + row_h * m, x1, top + row_h * m, GRID, 1)
+    g.text(x0, top + row_h * m + 13, "계열마다 눈금이 따로입니다(높이로 계열끼리 크기를 비교하지 마세요) · ○ 최고·최저, ● 마지막 값", 10.5, MUTED)
+    g.h = max(g.h if g.h > h else 0, min(h, int(top + row_h * m + 26))) or h
+    return g.out()
+
+
+# ── 캔들스틱 ────────────────────────────────────────────────────────────────
+UP_COL, DOWN_COL = "#e34948", "#2a78d6"  # 한국 관례: 오름 빨강, 내림 파랑
+
+
+def candle_colors(spec):
+    cs = spec.get("colors") or {}
+    get = (lambda i: cs[i] if isinstance(cs, list) and i < len(cs) and cs[i] else None) if isinstance(cs, list) else (lambda i: cs.get(str(i)))
+    return get(0) or UP_COL, get(1) or DOWN_COL
+
+
+def render_candle(table, spec, w, h):
+    d = core.category_data(table, spec)
+    cats = d["cats"]
+    px = [s for s in d["series"] if not s.get("role")]
+    vol = next((s for s in d["series"] if s.get("role") == "volume" and not s["hidden"]), None)
+    up, dn = candle_colors(spec)
+    legend = [("상승 (종가 ≥ 시가)", up, "bar"), ("하락 (종가 < 시가)", dn, "bar")]
+    g, (x0, y0, x1, y1) = frame(spec, w, h, legend)
+    if len(px) < 4 or not cats:
+        return _empty(g, w, h, "시가·고가·저가·종가 4개 열이 필요합니다")
+    O, H, L, C = (s["values"] for s in px[:4])
+    unit = px[3].get("unit", "")
+    lows = [v for v in L + O + C if v is not None]
+    highs = [v for v in H + O + C if v is not None]
+    if not lows:
+        return _empty(g, w, h)
+    lo, hi, ticks, step = nice_domain(min(lows), max(highs), False, 5)
+    xtitle = axis_title(spec, "x_title", spec.get("x") or "")
+    ytitle = axis_title(spec, "y_title", unit_title("가격", unit))
+    n = len(cats)
+    room = x_label_room(cats, (x1 - x0 - 60) / n, xtitle)
+    vh = (y1 - y0 - room) * 0.22 if vol else 0
+    gap = 14 if vol else 0
+    px0, py0, sy = y_axis(g, (x0, y0, x1, y1 - room - vh - gap), lo, hi, ticks, step, unit, ytitle)
+    py1 = y1 - room - vh - gap
+    band = (x1 - px0) / n
+    cx = lambda i: px0 + band * (i + .5)
+    bw = max(1.5, min(14, band * 0.62))
+    dec = core.decimals_of(lows + highs)
+    f = lambda v: core.fmt(v, dec, unit)
+    for i in range(n):
+        o, hh, ll, c = O[i], H[i], L[i], C[i]
+        if None in (o, c):
+            continue
+        hh = max(x for x in (hh, o, c) if x is not None)
+        ll = min(x for x in (ll, o, c) if x is not None)
+        col = up if c >= o else dn
+        a, t = tip(cats[i], f"시가 {f(o)}", f"고가 {f(hh)}", f"저가 {f(ll)}", f"종가 {f(c)}",
+                   f"{vol['name']} {core.fmt(vol['values'][i])}" if vol and vol["values"][i] is not None else "")
+        g.line(cx(i), sy(hh), cx(i), sy(ll), col, 1.25)
+        ya, yb = sy(max(o, c)), sy(min(o, c))
+        g.add(f'<rect x="{cx(i) - bw / 2:.1f}" y="{ya:.1f}" width="{bw:.1f}" height="{max(yb - ya, 1.2):.1f}" rx="1" fill="{col}" {a}>{t}</rect>')
+    if (spec.get("labels") or "auto") != "none":
+        li = max((i for i in range(n) if C[i] is not None), default=None)
+        if li is not None:
+            top_ = max(x for x in (H[li], O[li], C[li]) if x is not None)
+            g.text(min(cx(li), x1 - tw(f(C[li]), 11.5) / 2), sy(top_) - 7, f"종가 {f(C[li])}", 11.5, INK, "end" if cx(li) + 40 > x1 else "middle")
+    if vol:
+        vv = [v for v in vol["values"] if v is not None] or [0]
+        vlo, vhi, vt, vs = nice_domain(0, max(vv), True, 2)
+        vy0, vy1 = py1 + gap, py1 + gap + vh
+        vsy = lambda v: vy1 - (v - vlo) / ((vhi - vlo) or 1) * (vy1 - vy0 - 16)
+        g.text(px0 + 4, vy0 + 9, unit_title(vol["name"], vol.get("unit", "")), 11, INK2)
+        for t, lab in zip(vt, tick_fmt(vt, vs, vol.get("unit", ""))):
+            if t > 0 and t == vt[-1]:
+                g.line(px0, vsy(t), x1, vsy(t), GRID, 1)
+                g.text(px0 - 7, vsy(t) + 4, lab, 10.5, MUTED, "end")
+        g.line(px0, vy1, x1, vy1, BASE, 1)
+        for i, v in enumerate(vol["values"]):
+            if v is None:
+                continue
+            o, c = O[i], C[i]
+            col = up if (o is None or c is None or c >= o) else dn
+            a, t = tip(cats[i], vol["name"], core.fmt(v) + _sfx(vol.get("unit", "")))
+            g.add(f'<rect x="{cx(i) - bw / 2:.1f}" y="{vsy(v):.1f}" width="{bw:.1f}" height="{max(vy1 - vsy(v), .5):.1f}" fill="{col}" fill-opacity="0.45" {a}>{t}</rect>')
+    x_cat_labels(g, cats, lambda c: cx(cats.index(c)), band, y1 - room, px0, x1, xtitle)
+    return g.out()
+
+
+# ── 폭포 ──────────────────────────────────────────────────────────────────
+WF_COLS = ("#1baf7a", "#e34948", "#2a78d6")  # 증가·감소·합계
+
+
+def wf_colors(spec):
+    cs = spec.get("colors") or {}
+    out = []
+    for i, dflt in enumerate(WF_COLS):
+        c = (cs[i] if isinstance(cs, list) and i < len(cs) and cs[i] else None) if isinstance(cs, list) else cs.get(str(i))
+        out.append(c or dflt)
+    return out
+
+
+def render_waterfall(table, spec, w, h):
+    d = core.category_data(table, spec)
+    steps = core.waterfall_steps(table, spec, d)
+    cu, cd, ct = wf_colors(spec)
+    legend = [("증가", cu, "bar"), ("감소", cd, "bar"), ("합계", ct, "bar")]
+    g, box = frame(spec, w, h, legend)
+    if not steps:
+        return _empty(g, w, h)
+    sers = _vis(d)
+    unit = sers[0].get("unit", "") if sers else ""
+    ends = [x for st in steps for x in (st["a"], st["b"])]
+    lo, hi, ticks, step = nice_domain(min(ends), max(ends), True)
+    cats = [st["cat"] for st in steps]
+    ytitle = _ytitle(spec, sers[:1], unit)
+    px0, py0, py1, px1, band, cx, sy = _cat_axes(g, box, cats, lo, hi, ticks, step, unit, ytitle, axis_title(spec, "x_title", spec.get("x") or ""))
+    bw = min(34, band * 0.62)
+    dec = core.decimals_of([st["value"] for st in steps])
+    labels = spec.get("labels") or "auto"
+    for i, st in enumerate(steps):
+        col = {"up": cu, "down": cd, "total": ct}[st["kind"]]
+        top, bot = max(st["a"], st["b"]), min(st["a"], st["b"])
+        ya, yb = sy(top), sy(bot)
+        sign = "+" if st["kind"] == "up" else ""
+        txt = (sign + core.fmt(st["value"], dec, unit)) if st["kind"] != "total" else core.fmt(st["value"], dec, unit)
+        a, t = tip(st["cat"], {"up": "증가", "down": "감소", "total": "합계"}[st["kind"]], txt + _sfx(unit),
+                   f"누적 {core.fmt(st['b'], dec, unit)}" if st["kind"] != "total" else "")
+        g.add(f'<rect x="{cx(i) - bw / 2:.1f}" y="{ya:.1f}" width="{bw:.1f}" height="{max(yb - ya, 1):.1f}" rx="2" fill="{col}" {a}>{t}</rect>')
+        if i + 1 < len(steps):
+            nxt = steps[i + 1]
+            lvl = st["b"]
+            if nxt["kind"] != "total" or abs(nxt["b"] - lvl) < 1e-9:
+                g.line(cx(i) + bw / 2, sy(lvl), cx(i + 1) - bw / 2, sy(lvl), BASE, 1, 'stroke-dasharray="3 3"')
+        if labels != "none" and (labels == "all" or len(steps) <= 20) and band >= tw(txt, 10.5) - 4:
+            fs = 10.5 if len(steps) > 10 else 11
+            below = st["value"] < 0 and yb + 15 < py1  # 아래 자리가 없으면(축 바닥) 막대 위에
+            g.text(cx(i), yb + 13 if below else ya - 5, txt, fs, INK, "middle")
+    return g.out()
+
+
+# ── 깔때기 ────────────────────────────────────────────────────────────────
+def render_funnel(table, spec, w, h):
+    d = core.category_data(table, spec)
+    sers = _vis(d)
+    g, (x0, y0, x1, y1) = frame(spec, w, h, [])
+    if not sers:
+        return _empty(g, w, h)
+    s = sers[0]
+    items = [(c, v) for c, v in zip(d["cats"], s["values"]) if v is not None and v > 0]
+    if not items:
+        return _empty(g, w, h, "양수 값이 없습니다")
+    unit = s.get("unit", "")
+    labels = spec.get("labels") or "auto"
+    show = labels != "none"
+    labw = min(170, max(tw(c, 12.5) for c, _ in items) + 14)
+    rw = 150 if show else 0
+    fx0, fx1 = x0 + labw, x1 - rw
+    mid = (fx0 + fx1) / 2
+    n = len(items)
+    band = min(64, (y1 - y0) / n)
+    bh = band * 0.72
+    vmax = max(v for _, v in items)
+    col = color_for(spec, s["idx"])
+    dec = core.decimals_of([v for _, v in items])
+    half = lambda v: (fx1 - fx0) / 2 * v / vmax
+    if show:
+        g.text(x1, y0 + 2, "이전 단계 대비 · 처음 대비", 11, MUTED, "end")
+    for i, (c, v) in enumerate(items):
+        top = y0 + 8 + band * i + (band - bh) / 2
+        hw = half(v)
+        if i + 1 < n:  # 다음 단계로 이어지는 연한 사다리꼴
+            nv = items[i + 1][1]
+            nt = y0 + 8 + band * (i + 1) + (band - bh) / 2
+            g.add(f'<path d="M{mid - hw:.1f},{top + bh:.1f}L{mid + hw:.1f},{top + bh:.1f}L{mid + half(nv):.1f},{nt:.1f}L{mid - half(nv):.1f},{nt:.1f}Z" fill="{col}" fill-opacity="0.13"/>')
+        a, t = tip(c, core.fmt(v, dec, unit) + _sfx(unit), f"처음 대비 {v / items[0][1] * 100:.1f}%")
+        g.add(f'<rect x="{mid - hw:.1f}" y="{top:.1f}" width="{max(2 * hw, 1):.1f}" height="{bh:.1f}" rx="3" fill="{col}" {a}>{t}</rect>')
+        g.text(fx0 - 10, top + bh / 2 + 4.5, clip(c, 12.5, labw - 14), 12.5, INK2, "end")
+        if show:
+            vt = core.fmt(v, dec, unit) + _sfx(unit)
+            if 2 * hw >= tw(vt, 12) + 10:
+                g.text(mid, top + bh / 2 + 4.5, vt, 12, text_on(col), "middle", 600, on_bg(col))
+            else:
+                g.text(mid + hw + 6, top + bh / 2 + 4.5, vt, 12, INK, "start", 600)
+            conv = "" if i == 0 else f"{v / items[i - 1][1] * 100:.1f}% · {v / items[0][1] * 100:.1f}%"
+            if conv:
+                g.text(x1, top + bh / 2 + 4.5, conv, 11.5, INK2, "end")
+    g.h = min(h, int(y0 + 8 + band * n + 16))
+    return g.out()
+
+
+# ── 거품 ──────────────────────────────────────────────────────────────────
+def render_bubble(table, spec, w, h):
+    sers = [s for s in core.bubble_data(table, spec) if not s["hidden"]]
+    multi = bool(spec.get("group")) and len(sers) > 1
+    legend = [(s["name"], color_for(spec, s["idx"]), "dot") for s in sers] if multi else []
+    g, (x0, y0, x1, y1) = frame(spec, w, h, legend)
+    pts = [p for s in sers for p in s["points"]]
+    if not pts:
+        return _empty(g, w, h, "점이 없습니다 (크기 열은 양수여야 함)")
+    xu, yu = core.unit_of(table, spec["x"]), core.unit_of(table, spec["ys"][0])
+    zname = spec.get("size") or ""
+    zu = core.unit_of(table, zname) if zname else ""
+    zmax = max(p[2] for p in pts)
+    leg_w = 110 if zname else 0
+    rmax = max(8, min(32, 0.17 * (x1 - x0 - leg_w) / math.sqrt(max(1, len(pts)))))  # 점이 많으면 작게
+    rr = lambda z: max(3, rmax * math.sqrt(z / zmax))
+    xlo, xhi, xt, xs_ = nice_domain(min(p[0] for p in pts), max(p[0] for p in pts), zero=False)
+    ylo, yhi, yt, ys_ = nice_domain(min(p[1] for p in pts), max(p[1] for p in pts), zero=False)
+    ytitle = axis_title(spec, "y_title", unit_title(spec["ys"][0], yu))
+    xtitle = axis_title(spec, "x_title", unit_title(spec["x"], xu))
+    room = 20 + (18 if xtitle else 0)
+    px0, py0, sy0 = y_axis(g, (x0, y0, x1 - leg_w - 8, y1 - room), ylo, yhi, yt, ys_, yu, ytitle)
+    py1 = y1 - room
+    px1 = x1 - leg_w - 8
+    # 거품이 플롯 밖으로 나가지 않게 안쪽 여백
+    ins = rmax * 0.6
+    sx = lambda v: px0 + ins + (v - xlo) / ((xhi - xlo) or 1) * (px1 - px0 - 2 * ins)
+    sy = lambda v: py1 - ins - (v - ylo) / ((yhi - ylo) or 1) * (py1 - py0 - 2 * ins)
+    for t, lab in zip(xt, tick_fmt(xt, xs_, xu)):
+        g.line(sx(t), py0, sx(t), py1, GRID, 1)
+        g.text(sx(t), py1 + 15, lab, 11.5, MUTED, "middle")
+    g.line(px0, py1, px1, py1, BASE, 1)
+    if xtitle:
+        g.text((px0 + px1) / 2, py1 + 33, xtitle, 12, INK2, "middle")
+    labels = spec.get("labels") or "auto"
+    allp = sorted(((s, p) for s in sers for p in s["points"]), key=lambda sp: -sp[1][2])
+    big = {id(p) for _, p in allp[:10]}
+    for s, (x, y, z, lab) in allp:
+        c = color_for(spec, s["idx"])
+        r = rr(z)
+        a, t = tip(lab, s["name"] if multi else "", f"{spec['x']} {core.fmt(x)}", f"{spec['ys'][0]} {core.fmt(y)}", f"{zname} {core.fmt(z)}" if zname else "")
+        g.add(f'<circle cx="{sx(x):.1f}" cy="{sy(y):.1f}" r="{r:.1f}" fill="{c}" fill-opacity="0.55" stroke="{c}" stroke-width="1.5" {a}>{t}</circle>')
+    placed = []  # 이미 쓴 글자 상자 — 겹치면 건너뜀('모두'일 때만 다 씀)
+    for s, p in allp:
+        x, y, z, lab = p
+        if lab and labels != "none" and (labels == "all" or (id(p) in big and rr(z) >= 7)):
+            r = rr(z)
+            inside = tw(lab, 11) <= 2 * r - 4
+            tx, ty = sx(x), (sy(y) + 4 if inside else sy(y) - r - 4)
+            box_ = (tx - tw(lab, 11) / 2 - 2, ty - 11, tx + tw(lab, 11) / 2 + 2, ty + 2)
+            if labels != "all" and any(not (box_[2] < b[0] or box_[0] > b[2] or box_[3] < b[1] or box_[1] > b[3]) for b in placed):
+                continue
+            placed.append(box_)
+            g.text(tx, ty, lab, 11, INK, "middle")
+    if zname:  # 크기 범례
+        lx = x1 - leg_w / 2
+        g.text(lx, py0 + 4, clip(unit_title(zname, zu), 11, leg_w), 11, INK2, "middle")
+        for k, frac in enumerate((1.0, 0.25)):
+            z = zmax * frac
+            r = rr(z)
+            cyb = py0 + 20 + 2 * rmax
+            g.add(f'<circle cx="{lx:.1f}" cy="{cyb - r:.1f}" r="{r:.1f}" fill="none" stroke="{MUTED}" stroke-width="1"/>')
+            g.text(lx, cyb - 2 * r - 3 if k == 0 else cyb + 13, core.fmt(z), 10.5, MUTED, "middle")
+    return g.out()
+
+
+# ── 계단선·막대사탕·덤벨·불릿·누적+선 (범주 x) ─────────────────────────────────
+def render_step(table, spec, w, h):
+    d = core.category_data(table, spec)
+    cats, series = d["cats"], _vis(d)
+    legend = [(s["name"], color_for(spec, s["idx"]), "line") for s in series]
+    g, box = frame(spec, w, h, legend)
+    vals = [v for s in series for v in s["values"] if v is not None]
+    if not cats or not vals:
+        return _empty(g, w, h)
+    unit = series[0].get("unit", "")
+    lo, hi = min(vals), max(vals)
+    lo, hi, ticks, step = nice_domain(lo, hi, lo >= 0 and lo < 0.35 * hi)
+    px0, py0, py1, px1, band, cx, sy = _cat_axes(g, box, cats, lo, hi, ticks, step, unit, _ytitle(spec, series, unit),
+                                                 axis_title(spec, "x_title", spec.get("x") or ""))
+    dec = core.decimals_of(vals)
+    labels = spec.get("labels") or "auto"
+    n = len(cats)
+    for s in series:
+        c = color_for(spec, s["idx"])
+        pv = [(i, v) for i, v in enumerate(s["values"]) if v is not None]
+        if not pv:
+            continue
+        dpath = ""
+        for k, (i, v) in enumerate(pv):
+            xa = cx(i)
+            xb = cx(pv[k + 1][0]) if k + 1 < len(pv) else min(px1, cx(i) + band / 2)
+            dpath += (f"M{xa:.1f},{sy(v):.1f}" if k == 0 else f"V{sy(v):.1f}") + f"H{xb:.1f}"
+        g.add(f'<path d="{dpath}" fill="none" stroke="{c}" stroke-width="2.25" stroke-linejoin="round" stroke-linecap="round"/>')
+        prev = None
+        for i, v in pv:
+            a, t = tip(cats[i], s["name"] if len(series) > 1 else "", core.fmt(v, dec, unit) + _sfx(unit))
+            changed = prev is None or v != prev
+            ring = f'stroke="{SURFACE}" stroke-width="2"' if changed else ""
+            fill = c if changed else "transparent"
+            g.add(f'<circle cx="{cx(i):.1f}" cy="{sy(v):.1f}" r="{4 if changed else 7}" fill="{fill}" {ring} {a}>{t}</circle>')
+            if changed and labels != "none" and (labels == "all" or (len(series) == 1 and n <= 40)):
+                g.text(cx(i) + 3, sy(v) - 8, core.fmt(v, dec, unit), 10.5, INK, "start")
+            prev = v
+    return g.out()
+
+
+def render_lollipop(table, spec, w, h):
+    d = core.category_data(table, spec)
+    cats, series = d["cats"], _vis(d)[:1]
+    g, box = frame(spec, w, h, [])
+    vals = [v for s in series for v in s["values"] if v is not None]
+    if not cats or not vals:
+        return _empty(g, w, h)
+    s = series[0]
+    unit = s.get("unit", "")
+    lo, hi, ticks, step = nice_domain(min(vals), max(vals), True)
+    px0, py0, py1, px1, band, cx, sy = _cat_axes(g, box, cats, lo, hi, ticks, step, unit, _ytitle(spec, series, unit),
+                                                 axis_title(spec, "x_title", spec.get("x") or ""))
+    c = color_for(spec, s["idx"])
+    dec = core.decimals_of(vals)
+    labels = spec.get("labels") or "auto"
+    r = max(3.5, min(6.5, band * 0.28))
+    for i, v in enumerate(s["values"]):
+        if v is None:
+            continue
+        g.line(cx(i), sy(0), cx(i), sy(v), c, 2, 'stroke-linecap="round" opacity="0.75"')
+        a, t = tip(cats[i], core.fmt(v, dec, unit) + _sfx(unit))
+        g.add(f'<circle cx="{cx(i):.1f}" cy="{sy(v):.1f}" r="{r:.1f}" fill="{c}" stroke="{SURFACE}" stroke-width="2" {a}>{t}</circle>')
+        lab = core.fmt(v, dec, unit)
+        if labels != "none" and (labels == "all" or (len(cats) <= 20 and band >= tw(lab, 10.5) - 2)):
+            g.text(cx(i), sy(v) - r - 5 if v >= 0 else sy(v) + r + 13, lab, 10.5, INK, "middle")
+    return g.out()
+
+
+def render_dumbbell(table, spec, w, h):
+    d = core.category_data(table, spec)
+    cats, series = d["cats"], _vis(d)[:2]
+    legend = [(s["name"], color_for(spec, s["idx"]), "dot") for s in series]
+    g, box = frame(spec, w, h, legend)
+    vals = [v for s in series for v in s["values"] if v is not None]
+    if not cats or len(series) < 2 or not vals:
+        return _empty(g, w, h, "덤벨은 비교할 계열 2개가 필요합니다")
+    unit = series[0].get("unit", "")
+    lo, hi = min(vals), max(vals)
+    lo, hi, ticks, step = nice_domain(lo, hi, lo >= 0 and lo < 0.35 * hi)
+    px0, py0, py1, px1, band, cx, sy = _cat_axes(g, box, cats, lo, hi, ticks, step, unit, _ytitle(spec, [], unit),
+                                                 axis_title(spec, "x_title", spec.get("x") or ""))
+    a_s, b_s = series
+    dec = core.decimals_of(vals)
+    labels = spec.get("labels") or "auto"
+    ca, cb = color_for(spec, a_s["idx"]), color_for(spec, b_s["idx"])
+    for i in range(len(cats)):
+        va, vb = a_s["values"][i], b_s["values"][i]
+        if va is not None and vb is not None:
+            g.line(cx(i), sy(va), cx(i), sy(vb), BASE, 3.5, 'stroke-linecap="round"')
+        for s, v, col in ((a_s, va, ca), (b_s, vb, cb)):
+            if v is None:
+                continue
+            diff = "" if va is None or vb is None else f"차이 {'+' if vb - va >= 0 else ''}{core.fmt(vb - va, dec, unit)}"
+            at, t = tip(cats[i], s["name"], core.fmt(v, dec, unit) + _sfx(unit), diff)
+            g.add(f'<circle cx="{cx(i):.1f}" cy="{sy(v):.1f}" r="6" fill="{col}" stroke="{SURFACE}" stroke-width="2" {at}>{t}</circle>')
+        if labels != "none" and va is not None and vb is not None and (labels == "all" or len(cats) <= 12):
+            upper, lower = (va, vb) if va >= vb else (vb, va)
+            g.text(cx(i), sy(upper) - 10, core.fmt(upper, dec, unit), 10.5, INK, "middle")
+            g.text(cx(i), sy(lower) + 18, core.fmt(lower, dec, unit), 10.5, INK2, "middle")
+    return g.out()
+
+
+def render_bullet(table, spec, w, h):
+    d = core.category_data(table, spec)
+    cats = d["cats"]
+    act = _vis(d)[:1]
+    tgt = next((s for s in d["series"] if s.get("role") == "target" and not s["hidden"]), None)
+    tcol = INK2
+    legend = [(s["name"], color_for(spec, s["idx"]), "bar") for s in act] + ([(tgt["name"], tcol, "tick")] if tgt else [])
+    g, box = frame(spec, w, h, legend)
+    vals = [v for s in act + ([tgt] if tgt else []) for v in s["values"] if v is not None]
+    if not cats or not act or not vals:
+        return _empty(g, w, h)
+    s = act[0]
+    unit = s.get("unit", "")
+    lo, hi, ticks, step = nice_domain(min(vals), max(vals), True)
+    px0, py0, py1, px1, band, cx, sy = _cat_axes(g, box, cats, lo, hi, ticks, step, unit, _ytitle(spec, act, unit),
+                                                 axis_title(spec, "x_title", spec.get("x") or ""))
+    c = color_for(spec, s["idx"])
+    bw = min(24, band * 0.42)
+    dec = core.decimals_of(vals)
+    labels = spec.get("labels") or "auto"
+    for i in range(len(cats)):
+        v = s["values"][i]
+        tv = tgt["values"][i] if tgt else None
+        if tv is not None:  # 목표까지 연한 바탕
+            g.add(f'<rect x="{cx(i) - bw * 0.95:.1f}" y="{sy(max(tv, 0)):.1f}" width="{bw * 1.9:.1f}" height="{abs(sy(0) - sy(tv)):.1f}" rx="2" fill="#f0efec"/>')
+        if v is not None:
+            ya, yb = sy(max(v, 0)), sy(min(v, 0))
+            a, t = tip(cats[i], f"{s['name']} {core.fmt(v, dec, unit)}{_sfx(unit)}",
+                       f"{tgt['name']} {core.fmt(tv, dec, unit)}{_sfx(unit)}" if tv is not None else "",
+                       f"달성률 {v / tv * 100:.1f}%" if tv else "")
+            g.add(f'<path d="{bar_path(cx(i) - bw / 2, ya, bw, max(yb - ya, .5), 3, "top" if v >= 0 else "bottom")}" fill="{c}" {a}>{t}</path>')
+        if tv is not None:
+            g.line(cx(i) - bw * 0.95, sy(tv), cx(i) + bw * 0.95, sy(tv), tcol, 3.5)
+        if labels != "none" and v is not None and tv:
+            pct = f"{v / tv * 100:.0f}%"
+            top = min(sy(v), sy(tv))
+            g.text(cx(i), top - 7, pct if labels == "auto" else f"{core.fmt(v, dec, unit)} ({pct})", 11, INK, "middle", 600 if v >= tv else 400)
+    return g.out()
+
+
+def render_stack_line(table, spec, w, h):
+    d = core.category_data(table, spec)
+    cats = d["cats"]
+    bars = _vis(d)
+    line = next((s for s in d["series"] if s.get("role") == "line" and not s["hidden"]), None)
+    legend = [(s["name"], color_for(spec, s["idx"]), "bar") for s in bars] + ([(line["name"], color_for(spec, line["idx"]), "line")] if line else [])
+    g, box = frame(spec, w, h, legend)
+    if not cats or not (bars or line):
+        return _empty(g, w, h)
+    n = len(cats)
+    pos = [sum(max(0, s["values"][i] or 0) for s in bars) for i in range(n)]
+    neg = [sum(min(0, s["values"][i] or 0) for s in bars) for i in range(n)]
+    lv = [v for v in (line["values"] if line else []) if v is not None]
+    lo, hi, ticks, step = nice_domain(min(neg + lv + [0]), max(pos + lv + [0]), True)
+    unit = (bars or [line])[0].get("unit", "")
+    px0, py0, py1, px1, band, cx, sy = _cat_axes(g, box, cats, lo, hi, ticks, step, unit, _ytitle(spec, [], unit),
+                                                 axis_title(spec, "x_title", spec.get("x") or ""))
+    dec = core.decimals_of([v for s in bars for v in s["values"] if v is not None] + lv)
+    f = lambda v: core.fmt(v, dec, unit)
+    labels = spec.get("labels") or "auto"
+    bw = min(28, band * 0.6)
+    for i in range(n):
+        up = 0.0
+        segs = [(s, s["values"][i]) for s in bars if s["values"][i]]
+        segs = [(s, v) for s, v in segs if v > 0]
+        for j, (s, v) in enumerate(segs):
+            c = color_for(spec, s["idx"])
+            last = j == len(segs) - 1
+            ya, yb = sy(up + v), sy(up)
+            gap = 0 if last else 2
+            a, t = tip(cats[i], s["name"], f(v) + _sfx(unit))
+            g.add(f'<path d="{bar_path(cx(i) - bw / 2, ya + gap, bw, max(yb - ya - gap, .5), 4 if last else 0, "top" if last else "x")}" fill="{c}" {a}>{t}</path>')
+            if labels == "all" and yb - ya >= 16 and bw >= tw(f(v), 10.5) + 4:
+                g.text(cx(i), (ya + yb) / 2 + 4, f(v), 10.5, text_on(c), "middle", extra=on_bg(c))
+            up += v
+        if labels in ("auto", "all") and up > 0 and n <= 16 and not line:
+            g.text(cx(i), sy(up) - 5, f(up), 11, INK, "middle")
+    if line:
+        c = color_for(spec, line["idx"])
+        pts = [(cx(i), sy(v), v, i) for i, v in enumerate(line["values"]) if v is not None]
+        g.add(f'<polyline points="{" ".join(f"{x:.1f},{y:.1f}" for x, y, _, _ in pts)}" fill="none" stroke="{c}" stroke-width="2.25" stroke-linejoin="round" stroke-linecap="round"/>')
+        for x, y, v, i in pts:
+            a, t = tip(cats[i], line["name"], f(v) + _sfx(unit), f"막대 합계 {f(pos[i])}")
+            g.add(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" fill="{c}" stroke="{SURFACE}" stroke-width="2" {a}>{t}</circle>')
+        if pts and labels != "none":
+            x, y, v, _ = pts[-1]
+            g.text(x + 8, y + 4, f(v), 11.5, INK, "start") if x + 8 + tw(f(v), 11.5) < w else g.text(x, y - 10, f(v), 11.5, INK, "middle")
+    return g.out()
+
+
+# ── 트리맵·로즈 ─────────────────────────────────────────────────────────────
+def render_treemap(table, spec, w, h):
+    d = core.category_data(table, spec)
+    sers = _vis(d)
+    g, (x0, y0, x1, y1) = frame(spec, w, h, [])
+    if not sers:
+        return _empty(g, w, h)
+    s = sers[0]
+    hidden = set(spec.get("hidden_cats") or [])
+    items = sorted(((c, v) for c, v in zip(d["cats"], s["values"]) if v and v > 0 and c not in hidden), key=lambda cv: -cv[1])
+    if not items:
+        return _empty(g, w, h, "양수 값이 없습니다")
+    unit = s.get("unit", "")
+    tot = sum(v for _, v in items)
+    dec = core.decimals_of([v for _, v in items])
+    lo, hi = min(v for _, v in items), max(v for _, v in items)
+    labels = spec.get("labels") or "auto"
+    base = spec.get("colors")
+    custom = (base[0] if isinstance(base, list) and base and base[0] else None) if isinstance(base, list) else (base or {}).get("0")
+    for k, v, x, y, ww, hh in core.squarify(items, x0, y0 + 2, x1 - x0, y1 - y0 - 2):
+        f = (v - lo) / ((hi - lo) or 1)
+        col = custom or SEQ[min(len(SEQ) - 1, 3 + int(round(f * (len(SEQ) - 4))))]
+        a, t = tip(k, core.fmt(v, dec, unit) + _sfx(unit) + ("" if unit != "%" else ""), f"{v / tot * 100:.1f}%")
+        g.add(f'<rect x="{x + 1:.1f}" y="{y + 1:.1f}" width="{max(ww - 2, .5):.1f}" height="{max(hh - 2, .5):.1f}" rx="3" fill="{col}" {a}>{t}</rect>')
+        if labels == "none":
+            continue
+        name = clip(k, 12.5, ww - 12)
+        if ww >= 34 and hh >= 22 and name != "…":
+            g.text(x + 8, y + 18, name, 12.5, text_on(col), "start", 600, on_bg(col))
+            vt = f"{core.fmt(v, dec, unit)}{'%' if unit == '%' else ''} · {v / tot * 100:.1f}%"
+            if hh >= 40 and tw(vt, 11.5) <= ww - 14:
+                g.text(x + 8, y + 34, vt, 11.5, text_on(col), "start", extra=on_bg(col))
+    return g.out()
+
+
+def render_rose(table, spec, w, h):
+    d = core.category_data(table, spec)
+    sers = _vis(d)
+    g, (x0, y0, x1, y1) = frame(spec, w, h, [])
+    if not sers:
+        return _empty(g, w, h)
+    s = sers[0]
+    cats, vals = d["cats"], s["values"]
+    vs = [v for v in vals if v is not None and v >= 0]
+    if not vs or max(vs) <= 0:
+        return _empty(g, w, h)
+    unit = s.get("unit", "")
+    n = len(cats)
+    labw = min(70, max(tw(c, 12) for c in cats) + 8)
+    R = max(40, min((x1 - x0) / 2 - labw - 10, (y1 - y0) / 2 - 22))
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2 + 2
+    vmax = max(vs)
+    _, top, ticks, step = nice_domain(0, vmax, True, 4)
+    rad = lambda v: R * math.sqrt(max(v, 0) / top)  # 넓이 ∝ 값
+    for t, lab in zip(ticks, tick_fmt(ticks, step, unit)):
+        if t <= 0:
+            continue
+        g.add(f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{rad(t):.1f}" fill="none" stroke="{GRID}" stroke-width="1"/>')
+        g.text(cx + 3, cy - rad(t) + 11, lab, 10.5, MUTED, "start")
+    col = color_for(spec, s["idx"])
+    dec = core.decimals_of(vs)
+    labels = spec.get("labels") or "auto"
+    da = 2 * math.pi / n
+    for i, (c, v) in enumerate(zip(cats, vals)):
+        a1 = -math.pi / 2 + da * i
+        a2 = a1 + da
+        p = lambda a, rr: (cx + rr * math.cos(a), cy + rr * math.sin(a))
+        lx, ly = p((a1 + a2) / 2, R + 12)
+        ca = math.cos((a1 + a2) / 2)
+        g.text(lx, ly + 4, clip(c, 12, labw), 12, INK2, "start" if ca > 0.25 else ("end" if ca < -0.25 else "middle"))
+        if v is None or v <= 0:
+            continue
+        r = rad(v)
+        (ax, ay), (bx, by) = p(a1, r), p(a2, r)
+        at, t = tip(c, core.fmt(v, dec, unit) + _sfx(unit))
+        g.add(f'<path d="M{cx:.1f},{cy:.1f}L{ax:.1f},{ay:.1f}A{r:.1f},{r:.1f} 0 0,1 {bx:.1f},{by:.1f}Z" fill="{col}" fill-opacity="0.85" stroke="{SURFACE}" stroke-width="2" stroke-linejoin="round" {at}>{t}</path>')
+        if labels != "none" and (labels == "all" or v >= vmax * 0.25):
+            mx, my = p((a1 + a2) / 2, r - 12 if r > 34 else r + 10)
+            g.text(mx, my + 4, core.fmt(v, dec, unit), 10.5, text_on(col) if r > 34 else INK, "middle", extra=on_bg(col) if r > 34 else "")
+    return g.out()
+
+
 def render(table, spec, w=720, h=440):
     k = spec.get("kind")
     try:
-        if k in ("pie", "doughnut"):
+        if k in ("pie", "doughnut", "semi_doughnut"):
             return render_pie(table, spec, w, h)
+        fn = {"radar": render_radar, "sparkline": render_sparkline, "candlestick": render_candle, "waterfall": render_waterfall,
+              "funnel": render_funnel, "bubble": render_bubble, "step": render_step, "lollipop": render_lollipop,
+              "dumbbell": render_dumbbell, "bullet": render_bullet, "stack_line": render_stack_line,
+              "treemap": render_treemap, "rose": render_rose}.get(k)
+        if fn:
+            return fn(table, spec, w, h)
         if k == "scatter":
             return render_scatter(table, spec, w, h)
         if k == "hist":
