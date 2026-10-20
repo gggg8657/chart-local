@@ -741,6 +741,148 @@ try:
         check(False, "빈 선택 거부")
     except urllib.error.HTTPError as e:
         check(e.code == 400, "빈 선택 400")
+    # ── 색 프로필(팔레트): meta · 대비 · 팔레트 × 대표 종류 그림 · 4형식 내보내기(XML 안 색·무늬) · suggest/render/rerank/parse ──
+    import palettes
+    meta_p = json.load(urllib.request.urlopen(base + "/api/meta"))["palettes"]
+    check([x["id"] for x in meta_p] == palettes.IDS and len(meta_p) == 10, "meta 팔레트 목록")
+    check(all(8 <= len(x["colors"]) <= 10 and x["kind"] in ("categorical", "sequential", "print") and x["name"] and len(x["seq"]) == 13
+              for x in meta_p), "팔레트 형식")
+    check(meta_p[0]["id"] == "default" and meta_p[0]["colors"] == svg.PAL and meta_p[0]["seq"] == svg.SEQ, "기본 팔레트 = 지금 색")
+    check(all(len(set(x["colors"])) == len(x["colors"]) for x in meta_p), "팔레트 안 색 중복 없음")
+    pr_ = palettes.BY_ID["print"]
+    check(not set(pr_["colors"]) & {svg.INK, svg.INK2, svg.MUTED, svg.GRID, svg.BASE, svg.SURFACE, "#f0efec", "#f0efea"}, "인쇄 회색 ≠ 글자·격자색")
+    for pp in palettes.PALETTES:   # 색 칸 위 값 글자 대비 (흰색·잉크 중 큰 쪽) ≥ 4.4
+        worst = min(palettes.contrast(svg.text_on(c), c) for c in pp["colors"] + palettes.seq({"palette": pp["id"]}))
+        check(worst >= 4.4, (pp["id"], "글자 대비", round(worst, 2)))
+    REPS = [("budget", "col_group"), ("budget", "line"), ("share", "pie"), ("share", "doughnut"), ("budget", "col_stack"),
+            ("skills", "radar"), ("budget", "heatmap"), ("stock_daily", "candlestick"), ("region", "treemap"), ("pnl", "waterfall")]
+    rspec = {}
+    for sid, kd in REPS:
+        c0 = next(c for c in rec[sid] if c["kind"] == kd)
+        if kd == "candlestick":
+            c0 = dict(c0, ma=[5, 20], bb=True, panels=["volume", "macd"])
+        rspec[(sid, kd)] = c0
+    for pp in palettes.PALETTES:
+        pid = pp["id"]
+        for (sid, kd), c0 in rspec.items():
+            sp = dict(c0, palette=pid)
+            sv = svg.render(smp[sid], sp, 720, 440)
+            check(sv.startswith("<svg") and "그릴 수 없음" not in sv, (pid, kd, "그림"))
+            if kd in ("heatmap", "treemap"):
+                sq = palettes.seq(sp)
+                check(sum(c in sv for c in sq) >= 3, (pid, kd, "명도 단계 색"))
+            elif kd == "candlestick":
+                fc = svg.fin_cols(sp)
+                want = [fc["ma"][0], fc["ma"][1], fc["bb"], fc["macd"]]
+                if pid == "print":
+                    check("stroke-dasharray" in sv and svg.UP_PRINT in sv, (pid, "캔들 인쇄"))
+                else:
+                    check(all(c in sv for c in want) and (pid == "default" or any(c in sv for c in pp["colors"])), (pid, "캔들 보조선 = 팔레트 색"))
+            elif kd == "waterfall":
+                check(all(c in sv for c in (svg.wf_colors(sp) if pid != "print" else [])) and ("url(#pp-" in sv if pid == "print" else True), (pid, kd))
+            elif pid == "print":
+                check(("url(#pp-" in sv and "<pattern" in sv) if kd in ("col_group", "pie", "doughnut", "col_stack") else "stroke-dasharray" in sv,
+                      (pid, kd, "무늬·선 모양"))
+            else:
+                check(pp["colors"][0] in sv and pp["colors"][1] in sv, (pid, kd, "팔레트 색"))
+        # 계열 colors 가 팔레트보다 먼저
+        sp = dict(rspec[("budget", "col_group")], palette=pid, colors={"1": "#123456"})
+        sv = svg.render(smp["budget"], sp, 720, 440)
+        check("#123456" in sv and (pp["colors"][1] not in sv or pid == "print"), (pid, "colors 덮어쓰기 우선"))
+    # 내보내기: 팔레트마다 대표 그림 묶음 → 4형식, 차트 XML 에 팔레트 색(인쇄는 pattFill·prstDash)
+    exp_specs = [rspec[k] for k in [("budget", "col_group"), ("budget", "line"), ("share", "pie"), ("skills", "radar"),
+                                     ("budget", "heatmap"), ("stock_daily", "candlestick")]]
+    pdir = os.path.join(TMP, "pal")
+    os.makedirs(pdir, exist_ok=True)
+    fmts = ["xlsx", "pptx", "docx"] + (["hwpx"] if export.hwpx_available() else [])
+    for pp in palettes.PALETTES:
+        pid = pp["id"]
+        specs_p = [dict(c, palette=pid) for c in exp_specs]
+        for fm in fmts:
+            path = os.path.join(pdir, f"{pid}.{fm}")
+            if fm == "hwpx":
+                try:
+                    export.BUILDERS[fm](smp["budget"], specs_p[:2], path, doc_title=f"색 {pid}")
+                except Exception as e:
+                    check(False, (pid, fm, e))
+                zh = zipfile.ZipFile(path)
+                blob = " ".join(zh.read(n).decode("utf-8", "ignore") for n in zh.namelist() if n.startswith("Chart/")).upper()
+                want = pp["colors"][0].lstrip("#").upper() if pid != "print" else pr_["colors"][0].lstrip("#").upper()
+                check(want in blob, (pid, "HWPX 한글 차트 색"))
+                continue
+            # 한 문서에 표가 다른 그림을 섞지 않으려고 표마다 따로 (같은 문서 형식)
+            for tid, idxs in (("budget", [0, 1, 4]), ("share", [2]), ("skills", [3]), ("stock_daily", [5])):
+                pth = path.replace(f".{fm}", f"-{tid}.{fm}")
+                export.BUILDERS[fm](smp[tid], [specs_p[i] for i in idxs], pth, doc_title=f"색 {pid}")
+                ver = export.verify(pth)
+                check(ver["ok"], (pid, fm, tid, ver["errors"][:3]))
+                z = zipfile.ZipFile(pth)
+                xml = " ".join(z.read(n).decode() for n in z.namelist() if palettes.CHART_PART.match(n))
+                if tid == "budget":   # 히트맵은 표(조건부 서식·칠한 칸) → 시트·문서 본문에서 확인
+                    body = " ".join(z.read(n).decode("utf-8", "ignore") for n in z.namelist() if n.endswith(".xml")).upper()
+                    sq = palettes.seq({"palette": pid})
+                    check(any(c.lstrip("#").upper() in body for c in sq), (pid, fm, "히트맵 표 색"))
+                if pid == "print":
+                    if tid in ("budget", "share"):
+                        check("pattFill" in xml and 'prst="' in xml, (pid, fm, tid, "인쇄 무늬 pattFill"))
+                    if tid in ("budget", "skills"):
+                        check("prstDash" in xml, (pid, fm, tid, "인쇄 선 모양 prstDash"))
+                    if tid in ("budget", "share"):
+                        check(pr_["colors"][1].lstrip("#").upper() in xml, (pid, fm, tid, "인쇄 회색 바탕"))
+                elif tid == "stock_daily":
+                    fc = svg.fin_cols(specs_p[5])
+                    check(fc["ma"][0].lstrip("#").upper() in xml.upper() and fc["macd"].lstrip("#").upper() in xml.upper(), (pid, fm, "주가 보조선 색"))
+                else:
+                    n_ = 3 if tid != "share" else 5
+                    check(all(c.lstrip("#").upper() in xml.upper() for c in pp["colors"][:n_]), (pid, fm, tid, "차트 XML 팔레트 색"))
+    # 인쇄 후처리는 다시 해도 같음(멱등)
+    pth = os.path.join(pdir, "print-budget.pptx")
+    check(palettes.print_office_file(pth) == 0, "인쇄 후처리 멱등")
+    # 내 색 프로필(custom) · 모르는 id 정리
+    cus = ["#112233", "#445566", "#778899"]
+    spc = palettes.normalize_spec(dict(rspec[("budget", "col_group")], palette="custom", palette_colors=cus + ["bad", 3]))
+    check(spc["palette_colors"] == cus and all(c in svg.render(smp["budget"], spc) for c in cus), "custom 팔레트")
+    check("palette" not in palettes.normalize_spec({"kind": "col", "palette": "nope"}), "모르는 팔레트 id 버림")
+    check("palette" not in palettes.normalize_spec({"kind": "col", "palette": "custom", "palette_colors": ["x"]}), "빈 custom 버림")
+    # HTTP: suggest(갤러리 색 프로필)·render·export(인쇄)·잘못된 값 400
+    tb = smp["budget"]
+    sgp = post("/api/suggest", {"table": tb, "palette": "okabe"})
+    check(all(c.get("palette") == "okabe" for c in sgp["candidates"]) and "#0072b2" in sgp["candidates"][0]["svg"], "suggest 색 프로필")
+    sgc = post("/api/suggest", {"table": tb, "id": sgp["id"], "palette": "custom", "palette_colors": cus})
+    check(all(c.get("palette_colors") == cus for c in sgc["candidates"]) and cus[0] in sgc["candidates"][0]["svg"], "suggest 내 색 프로필")
+    sgs = post("/api/suggest", {"table": tb, "id": sgp["id"], "palette": "source", "source_colors": {"수탁과제": "#aa0000", "정부출연금": "#00aa00"}})
+    cg = next(c for c in sgs["candidates"] if c["kind"] == "col_group" and c["ys"][:2] == ["정부출연금", "수탁과제"])
+    check(cg["palette"] == "custom" and cg["palette_colors"][:2] == ["#00aa00", "#aa0000"] and "#aa0000" in cg["svg"], "suggest 원본 그림 색")
+    for bad in ({"palette": "nope"}, {"palette": "custom"}, {"palette": 3}):
+        try:
+            post("/api/suggest", dict({"table": tb}, **bad))
+            check(False, ("잘못된 팔레트 400", bad))
+        except urllib.error.HTTPError as e:
+            check(e.code == 400, ("잘못된 팔레트 400", bad))
+    rrp = post("/api/render", {"table": tb, "spec": dict(sgp["candidates"][0], palette="print")})
+    check("<pattern" in rrp["svg"] or "stroke-dasharray" in rrp["svg"], "render 흑백 인쇄")
+    rrx = post("/api/render", {"table": tb, "spec": dict(sgp["candidates"][0], palette="zzz")})
+    check(svg.PAL[0] in rrx["svg"], "render 모르는 팔레트 → 기본")
+    exp_ = post("/api/export", {"id": sgp["id"], "table": tb, "specs": [dict(c, palette="print") for c in sgp["candidates"][:2]], "format": "xlsx"})
+    check(exp_["verify"]["ok"], "export 흑백 인쇄 xlsx")
+    post("/api/history/delete", {"id": sgp["id"]})
+    # rerank: AI 제안의 palette 는 아는 id 만
+    import rerank as rr_
+    raw_ = {"kind": "col", "x": "연도", "ys": ["정부출연금"]}
+    check(rr_.check_spec(tb, dict(raw_, palette="warm")).get("palette") == "warm", "AI 제안 팔레트 받음")
+    check("palette" not in rr_.check_spec(tb, dict(raw_, palette="evil")) and "palette" not in rr_.check_spec(tb, dict(raw_, palette="custom")),
+          "AI 제안 모르는 팔레트 무시")
+    # parse: 디지타이저 XLSX '보정' 시트의 계열 색 → source_colors
+    wbd = openpyxl.Workbook(); wsd = wbd.active; wsd.title = "데이터"
+    wsd.append(["범주", "A계열", "B계열 (상대값)"]); [wsd.append([f"{y}년", y % 100 * 1.5, y % 100 * 2]) for y in (2021, 2022, 2023)]
+    inf = wbd.create_sheet("보정"); inf.append(["x축", "범주축 (막대 위치)"]); inf.append(["계열 색", "A계열", "#E34948"]); inf.append(["계열 색", "B계열", "#2A78D6"])
+    inf.append(["계열 색", "나쁜", "red"])
+    bd = io.BytesIO(); wbd.save(bd)
+    pd_ = post("/api/parse", {"file_b64": base64.b64encode(bd.getvalue()).decode(), "filename": "digi.xlsx"})
+    check(pd_.get("source_colors") == {"A계열": "#e34948", "B계열": "#2a78d6"}, ("원본 그림 색 읽기", pd_.get("source_colors")))
+    pd2 = post("/api/parse", {"file_b64": base64.b64encode(bd.getvalue()).decode(), "filename": "digi.xlsx", "sheet": "보정"})
+    check("source_colors" not in pd2, "다른 시트면 원본 색 없음")
+    check("source_colors" not in post("/api/parse", {"text": samples.SHARE}), "일반 표엔 원본 색 없음")
     srv.shutdown()
     print(f"selftest OK — {ok}개 확인 (hwpx: {'kordoc' if export.hwpx_available() else '생략 — kordoc 없음'})")
 finally:

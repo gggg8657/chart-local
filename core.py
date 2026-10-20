@@ -136,6 +136,24 @@ def xlsx_sheets(blob):
         wb.close()
 
 
+def xlsx_source_colors(blob):
+    """디지타이저가 내보낸 XLSX 의 '보정' 시트에 적힌 원본 그림 계열 색 → {계열 이름: '#rrggbb'} (없으면 {}).
+    줄 모양: ['계열 색', 이름, '#rrggbb'] — 다른 표에는 이 시트·줄이 없으니 빈 지도"""
+    import openpyxl
+    out = {}
+    wb = openpyxl.load_workbook(io.BytesIO(blob), read_only=True, data_only=True)
+    try:
+        if "보정" not in wb.sheetnames:
+            return out
+        for row in wb["보정"].iter_rows(values_only=True, max_row=400):
+            if len(row) >= 3 and row[0] == "계열 색" and isinstance(row[1], str) and isinstance(row[2], str) \
+                    and re.fullmatch(r"#[0-9a-fA-F]{6}", row[2].strip()) and len(out) < 24:
+                out[row[1].strip()[:80]] = row[2].strip().lower()
+    finally:
+        wb.close()
+    return out
+
+
 def read_xlsx(blob, sheet=None):
     import datetime
     import openpyxl

@@ -28,6 +28,7 @@ import portal_auth  # 포털 서명 확인 관문·오류 문장 정리(원본 a
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 import core  # noqa: E402
+import palettes  # noqa: E402
 import fin  # noqa: E402
 import export  # noqa: E402
 import rerank  # noqa: E402
@@ -203,6 +204,18 @@ def do_rerank(req, ws=WS, uid="owner"):
     finally:
         rerank.release(uid)
     res["model"] = model or MODEL
+    choice = req.get("palette")   # 화면 갤러리 색 프로필 — AI 제안 그림도 같은 색으로 (제안이 고른 팔레트가 있으면 그것)
+    if res.get("extra") and isinstance(choice, str) and choice in palettes.IDS + ["custom", "source"] and choice != "default":
+        pcols = palettes.clean_colors(req.get("palette_colors"))
+        srcmap = clean_source(req.get("source_colors")) if choice == "source" else {}
+        for e in res["extra"]:
+            if e.get("palette") or (choice == "custom" and not pcols):
+                continue
+            sp = {k: v for k, v in e.items() if k != "svg"}
+            palettes.apply_choice(sp, choice, pcols, srcmap)
+            if sp.get("palette"):
+                e.update(palette=sp["palette"], **({"palette_colors": sp["palette_colors"]} if sp.get("palette_colors") else {}))
+                e["svg"] = svg.render(table, sp, 720, 440)
     hid = req.get("id")
     if hid and res["ok"]:
         try:
@@ -309,7 +322,7 @@ def check_table(t):
 
 
 def do_parse(req):
-    sheets, sheet = None, None
+    sheets, sheet, src_colors = None, None, {}
     if req.get("file_b64"):
         blob = base64.b64decode(req["file_b64"])
         if len(blob) > MAX_UPLOAD:
@@ -318,6 +331,11 @@ def do_parse(req):
         if name.endswith((".xlsx", ".xlsm")):
             sheets = core.xlsx_sheets(blob)
             rows, sheet = core.read_xlsx(blob, req.get("sheet"))
+            if sheet in (None, "데이터") or (sheets and sheet == sheets[0]):
+                try:
+                    src_colors = core.xlsx_source_colors(blob)
+                except Exception:
+                    src_colors = {}
         elif name.endswith(".xls"):
             raise ValueError("옛 .xls 형식은 엑셀에서 .xlsx 로 저장한 뒤 올리거나, 셀을 복사해 붙여 넣어 주세요")
         else:
@@ -327,7 +345,10 @@ def do_parse(req):
     if not rows:
         raise ValueError("표 데이터를 찾지 못했습니다")
     table, notes = core.normalize(rows, transpose=req.get("transpose"))
-    return {"table": table, "notes": notes, "sheets": sheets, "sheet": sheet}
+    names = {c["name"] for c in table["columns"]}
+    src = {c["name"]: palettes.match_source(c["name"], src_colors) for c in table["columns"] if c["type"] == "num"} if src_colors else {}
+    src = {k: v for k, v in src.items() if v and k in names}
+    return {"table": table, "notes": notes, "sheets": sheets, "sheet": sheet, **({"source_colors": src} if src else {})}
 
 
 def do_suggest(req, ws=WS):
@@ -335,7 +356,16 @@ def do_suggest(req, ws=WS):
     cands = core.recommend(table)
     if not cands:
         raise ValueError("숫자 열이 없어 그래프를 만들 수 없습니다 — 열 타입을 '숫자'로 바꿔 보세요")
+    choice = req.get("palette")
+    if choice is not None and (not isinstance(choice, str) or choice not in palettes.IDS + ["custom", "source"]):
+        raise ValueError("모르는 색 프로필입니다")
+    pcols = palettes.clean_colors(req.get("palette_colors"))
+    if choice == "custom" and not pcols:
+        raise ValueError("내 색 프로필 색(palette_colors, #rrggbb 목록)이 없습니다")
+    srcmap = clean_source(req.get("source_colors")) if choice == "source" else {}
     for c in cands:
+        if choice:
+            palettes.apply_choice(c, choice, pcols, srcmap)
         c["svg"] = svg.render(table, c, 720, 440)
     hid = req.get("id")
     rec = None
@@ -357,9 +387,16 @@ def do_suggest(req, ws=WS):
     return {"id": rec["id"], "candidates": cands, **({"rerank": rr} if rr else {})}
 
 
+def clean_source(v):
+    """원본 그림 색 지도 {열 이름: '#rrggbb'} 검증 (최대 24개)"""
+    if not isinstance(v, dict):
+        return {}
+    return {str(k)[:80]: c.lower() for k, c in list(v.items())[:24] if isinstance(c, str) and palettes.HEX.fullmatch(c)}
+
+
 def do_render(req):
     table = check_table(req.get("table"))
-    spec = req.get("spec") or {}
+    spec = palettes.normalize_spec(req.get("spec") or {})
     if spec.get("kind") not in core.KINDS:
         raise ValueError("그래프 종류가 없습니다")
     note = ""
@@ -425,7 +462,7 @@ def do_export(req, ws=WS):
 def meta():
     return {"samples": [{"id": s["id"], "label": s["label"]} for s in samples.SAMPLES], "kinds": core.KINDS,
             "formats": [{"id": k, "label": v, "ok": k != "hwpx" or export.hwpx_available()} for k, v in FORMATS.items()],
-            "model": MODEL, "palette": svg.PAL,
+            "model": MODEL, "palette": svg.PAL, "palettes": palettes.meta_list(),
             "rerank": {"max_candidates": rerank.MAX_CANDS, "max_extra": rerank.MAX_EXTRA, "rate_n": rerank.RATE_N, "rate_s": rerank.RATE_S},
             "kind_colors": {"waterfall": list(svg.WF_COLS), "candlestick": [svg.UP_COL, svg.DOWN_COL], "ohlc": [svg.UP_COL, svg.DOWN_COL]},
             "updown_colors": {"kr": [svg.UP_COL, svg.DOWN_COL], "intl": [svg.UP_INTL, svg.DOWN_INTL]},

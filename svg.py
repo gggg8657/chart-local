@@ -9,6 +9,7 @@ import math
 from xml.sax.saxutils import escape
 
 import core
+import palettes
 
 PAL = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"]
 SEQ = ["#cde2fb", "#b7d3f6", "#9ec5f4", "#86b6ef", "#6da7ec", "#5598e7", "#3987e5", "#2a78d6", "#256abf",
@@ -49,13 +50,21 @@ def esc(s):
     return escape(str(s), {'"': "&quot;"})
 
 
-def color_for(spec, idx):
+def override_color(spec, idx):
+    """계열별로 직접 고른 색(colors: 목록 또는 {"순번": 색}) — 없으면 None"""
     cs = spec.get("colors") or {}
     if isinstance(cs, list):
-        c = cs[idx] if idx < len(cs) and cs[idx] else None
-    else:
-        c = cs.get(str(idx))
-    return c or PAL[idx % len(PAL)]
+        return cs[idx] if idx < len(cs) and cs[idx] else None
+    return cs.get(str(idx)) if isinstance(cs, dict) else None
+
+
+def color_for(spec, idx):
+    """계열 색: 직접 고른 색(colors) > 색 프로필(palette) > 기본"""
+    c = override_color(spec, idx)
+    if c:
+        return c
+    pal = palettes.colors(spec)
+    return pal[idx % len(pal)]
 
 
 def darken(hexc, f=0.78):
@@ -75,7 +84,9 @@ def lum(hexc):
 
 
 def text_on(fill):
-    return "#ffffff" if lum(fill) < 0.35 else INK
+    """색 칸 위 글자색 — 흰색·잉크 중 대비가 큰 쪽(팔레트마다 밝기가 달라 고정 문턱 대신 대비로 고름)"""
+    lf = lum(fill)
+    return "#ffffff" if (1.05 / (lf + 0.05)) > ((lf + 0.05) / (lum(INK) + 0.05)) else INK
 
 
 def on_bg(fill):
@@ -770,6 +781,7 @@ def render_heatmap(table, spec, w, h):
     if not vals:
         return g.out()
     lo, hi = min(vals), max(vals)
+    sq = palettes.seq(spec)
     unit = series[0].get("unit", "")
     dec = core.decimals_of(vals)
     labw = min(150, max(tw(s["name"], 12) for s in series) + 12)
@@ -789,7 +801,7 @@ def render_heatmap(table, spec, w, h):
                 g.add(f'<rect x="{x + 1:.1f}" y="{y + 1:.1f}" width="{cw - 2:.1f}" height="{ch - 2:.1f}" rx="3" fill="#f0efec"/>')
                 continue
             f = (v - lo) / ((hi - lo) or 1)
-            col = SEQ[min(len(SEQ) - 1, int(round(f * (len(SEQ) - 1))))]
+            col = sq[min(len(sq) - 1, int(round(f * (len(sq) - 1))))]
             a, t = tip(cats[i], s["name"], core.fmt(v, dec) + (" " + unit if unit and unit != "%" else ("%" if unit == "%" else "")))
             g.add(f'<rect x="{x + 1:.1f}" y="{y + 1:.1f}" width="{max(cw - 2, .5):.1f}" height="{max(ch - 2, .5):.1f}" rx="3" fill="{col}" {a}>{t}</rect>')
             lbl = core.fmt(v, dec)
@@ -801,9 +813,10 @@ def render_heatmap(table, spec, w, h):
     ly = min(y1 - 14, gy1 + room + 20)
     lw = min(220, x1 - gx0)
     lx = x1 - lw
-    stops = "".join(f'<stop offset="{i / (len(SEQ) - 1):.3f}" stop-color="{c}"/>' for i, c in enumerate(SEQ))
-    g.add(f'<defs><linearGradient id="hmg" x1="0" x2="1" y1="0" y2="0">{stops}</linearGradient></defs>'
-          f'<rect x="{lx:.1f}" y="{ly - 8:.1f}" width="{lw:.1f}" height="8" rx="2" fill="url(#hmg)"/>')
+    stops = "".join(f'<stop offset="{i / (len(sq) - 1):.3f}" stop-color="{c}"/>' for i, c in enumerate(sq))
+    gid = "hmg" if palettes.is_default(spec) else "hmg-" + palettes.key(spec)
+    g.add(f'<defs><linearGradient id="{gid}" x1="0" x2="1" y1="0" y2="0">{stops}</linearGradient></defs>'
+          f'<rect x="{lx:.1f}" y="{ly - 8:.1f}" width="{lw:.1f}" height="8" rx="2" fill="url(#{gid})"/>')
     g.text(lx, ly + 11, core.fmt(lo, dec), 11, MUTED, "start")
     g.text(lx + lw, ly + 11, core.fmt(hi, dec) + (f" {unit}" if unit else ""), 11, MUTED, "end")
     g.h = min(h, int(ly + 30))  # 행이 적으면 아래 빈 공간을 잘라 낸다
@@ -1161,7 +1174,12 @@ PANEL_W = {"volume": 0.26, "macd": 0.36, "rsi": 0.32}  # 가격 칸 1.0 대비 �
 PANEL_EXTRA = {"volume": 0, "macd": 120, "rsi": 110}   # 칸을 붙일 때 그림 높이를 늘리는 양(px)
 
 
+UP_PRINT, DOWN_PRINT = "#c8c8c8", "#262626"   # 흑백 인쇄: 오름 옅은 회색, 내림 진한 회색
+
+
 def updown_default(spec):
+    if palettes.is_print(spec):
+        return UP_PRINT, DOWN_PRINT
     return (UP_INTL, DOWN_INTL) if spec.get("colors_updown") == "intl" else (UP_COL, DOWN_COL)
 
 
@@ -1173,8 +1191,30 @@ def candle_colors(spec):
     return get(0) or u, get(1) or d
 
 
-def ma_color(i):
-    return MA_COLS[i % len(MA_COLS)]
+def _dist(a, b):
+    ra, rb = palettes._rgb(a), palettes._rgb(b)
+    return sum((x - y) ** 2 for x, y in zip(ra, rb)) ** .5
+
+
+def fin_cols(spec):
+    """주가 그림 보조 선 색 — 기본 팔레트는 지금 값 그대로, 다른 팔레트는 상승·하락 색과 먼 팔레트 색에서 고름"""
+    if palettes.is_default(spec):
+        return {"ma": MA_COLS, "bb": BB_COL, "bb_fill": BB_FILL, "macd": MACD_COL, "sig": SIG_COL, "rsi": RSI_COL,
+                "vp": VP_COL, "vp_va": VP_VA, "poc": POC_COL}
+    up, dn = candle_colors(spec)
+    pal = palettes.colors(spec)
+    av = [c for c in pal if _dist(c, up) > 70 and _dist(c, dn) > 70] or list(pal)
+    av = av + [c for c in pal if c not in av]
+    pr = palettes.is_print(spec)
+    bb = av[2 % len(av)]
+    return {"ma": av, "bb": bb, "bb_fill": "#d6d6d6" if pr else palettes.mix(bb, "#ffffff", 0.45), "macd": av[0], "sig": av[1 % len(av)],
+            "rsi": av[0], "vp": "#e4e4e4" if pr else palettes.mix(av[0], "#ffffff", 0.78),
+            "vp_va": "#b0b0b0" if pr else palettes.mix(av[0], "#ffffff", 0.45), "poc": av[1 % len(av)]}
+
+
+def ma_color(i, spec=None):
+    cs = fin_cols(spec or {})["ma"]
+    return cs[i % len(cs)]
 
 
 def _path(xs, ys):
@@ -1193,6 +1233,8 @@ def render_candle(table, spec, w, h):
     import fin
     k = spec.get("kind")
     up, dn = candle_colors(spec)
+    FC = fin_cols(spec)
+    BB_COL, BB_FILL, MACD_COL, SIG_COL, RSI_COL, VP_COL, VP_VA, POC_COL = (FC[k] for k in ("bb", "bb_fill", "macd", "sig", "rsi", "vp", "vp_va", "poc"))
     try:
         F = fin.compute(table, spec)
     except (ValueError, KeyError):
@@ -1200,7 +1242,7 @@ def render_candle(table, spec, w, h):
     op = F["opt"] if F else fin.options(spec, 0, False)
     legend = [("상승 (종가 ≥ 시가)", up, "bar"), ("하락 (종가 < 시가)", dn, "bar")]
     if F:
-        legend += [(f"이동평균 {wnd}", ma_color(i), "tick") for i, (wnd, _) in enumerate(F["ma"])]
+        legend += [(f"이동평균 {wnd}", ma_color(i, spec), "tick") for i, (wnd, _) in enumerate(F["ma"])]
         if F["bb"]:
             legend.append((f"볼린저 밴드 ({op['bb']['period']}, {op['bb']['k']:g}σ)", BB_FILL, "bar"))
         if F["vp"]:
@@ -1298,7 +1340,7 @@ def render_candle(table, spec, w, h):
             g.add(f'<rect x="{cx(i) - bw / 2:.1f}" y="{ya:.1f}" width="{bw:.1f}" height="{max(yb - ya, 1.2):.1f}" rx="{1 if bw > 3 else 0}" fill="{col}" {a}>{t}</rect>')
     # 이동평균
     for j, (wnd, s_) in enumerate(F["ma"]):
-        g.add(f'<path d="{_path([cx(i) for i in range(n)], [None if v is None else sy(v) for v in s_])}" fill="none" stroke="{ma_color(j)}" '
+        g.add(f'<path d="{_path([cx(i) for i in range(n)], [None if v is None else sy(v) for v in s_])}" fill="none" stroke="{ma_color(j, spec)}" '
               f'stroke-width="1.75" stroke-linejoin="round" stroke-linecap="round"/>')
     if (spec.get("labels") or "auto") != "none":
         li = max((i for i in range(n) if C[i] is not None), default=None)
@@ -1408,9 +1450,16 @@ WF_COLS = ("#1baf7a", "#e34948", "#2a78d6")  # 증가·감소·합계
 
 
 def wf_colors(spec):
+    """증가·감소·합계 색 — 직접 고른 색(colors 0·1·2) > 팔레트(증가·감소 관례 초록·빨강은 두고 합계만 팔레트 주 색, 흑백 인쇄는 회색 무늬) > 기본"""
     cs = spec.get("colors") or {}
     out = []
-    for i, dflt in enumerate(WF_COLS):
+    dfl = WF_COLS
+    if palettes.is_print(spec):
+        pc = palettes.colors(spec)
+        dfl = (pc[1], pc[0], pc[3])
+    elif not palettes.is_default(spec):
+        dfl = (WF_COLS[0], WF_COLS[1], palettes.colors(spec)[0])
+    for i, dflt in enumerate(dfl):
         c = (cs[i] if isinstance(cs, list) and i < len(cs) and cs[i] else None) if isinstance(cs, list) else cs.get(str(i))
         out.append(c or dflt)
     return out
@@ -1782,10 +1831,11 @@ def render_treemap(table, spec, w, h):
     lo, hi = min(v for _, v in items), max(v for _, v in items)
     labels = spec.get("labels") or "auto"
     base = spec.get("colors")
+    sq = palettes.seq(spec)
     custom = (base[0] if isinstance(base, list) and base and base[0] else None) if isinstance(base, list) else (base or {}).get("0")
     for k, v, x, y, ww, hh in core.squarify(items, x0, y0 + 2, x1 - x0, y1 - y0 - 2):
         f = (v - lo) / ((hi - lo) or 1)
-        col = custom or SEQ[min(len(SEQ) - 1, 3 + int(round(f * (len(SEQ) - 4))))]
+        col = custom or sq[min(len(sq) - 1, 3 + int(round(f * (len(sq) - 4))))]
         a, t = tip(k, core.fmt(v, dec, unit) + _sfx(unit) + ("" if unit != "%" else ""), f"{v / tot * 100:.1f}%")
         g.add(f'<rect x="{x + 1:.1f}" y="{y + 1:.1f}" width="{max(ww - 2, .5):.1f}" height="{max(hh - 2, .5):.1f}" rx="3" fill="{col}" {a}>{t}</rect>')
         if labels == "none":
@@ -1847,6 +1897,12 @@ def render_rose(table, spec, w, h):
 
 
 def render(table, spec, w=720, h=440):
+    """명세 → SVG. 흑백 인쇄 팔레트면 면 회색을 무늬로, 선 회색을 선 모양으로 바꿔 낸다(palettes.print_svg)"""
+    out = _render(table, spec, w, h)
+    return palettes.print_svg(out, spec) if palettes.is_print(spec) else out
+
+
+def _render(table, spec, w=720, h=440):
     k = spec.get("kind")
     try:
         if k in ("pie", "doughnut", "semi_doughnut"):

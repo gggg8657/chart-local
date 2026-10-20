@@ -18,6 +18,7 @@ import time
 import core
 import fin
 import export
+import palettes
 import svg
 
 MAX_CANDS = 12      # LLM 에 보내는 후보 수
@@ -387,6 +388,8 @@ def check_spec(table, raw):
         if typ[y] != "num" or sum(v is not None for v in core.col_nums(table, y)) < 2:
             raise ValueError(f"숫자 열이 아님: {y}")
     sp = {"kind": k, "ys": ys}
+    if isinstance(raw.get("palette"), str) and raw["palette"] in palettes.IDS and raw["palette"] != "default":
+        sp["palette"] = raw["palette"]   # 아는 색 프로필 id 만(custom·모르는 id 는 버림)
     # x
     if k in ("scatter", "bubble"):
         if not x or typ[x] != "num":

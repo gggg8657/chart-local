@@ -17,6 +17,7 @@ import tempfile
 
 import core
 import fin
+import palettes
 import svg
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -26,6 +27,14 @@ PAL = [c.lstrip("#").upper() for c in svg.PAL]
 
 def hexcol(spec, idx):
     return svg.color_for(spec, idx).lstrip("#").upper()
+
+
+def hwpcol(spec, idx, ct):
+    """한글(kordoc) 차트 색 — 흑백 인쇄는 무늬가 없으니 선 종류(꺾은선·방사형·산점)는 진한 선 회색으로"""
+    if palettes.is_print(spec) and ct in ("line", "index", "radar", "scatter") and not svg.override_color(spec, idx):
+        lc = palettes.get(spec)["line_colors"]
+        return lc[idx % len(lc)].lstrip("#").upper()
+    return hexcol(spec, idx)
 
 
 def numfmt(vals, unit=""):
@@ -93,19 +102,20 @@ def fin_blocks(table, spec, base, title):
     up, dn = svg.candle_colors(spec)
     unit, cats, n = F["unit"], F["cats"], len(F["cats"])
     xt = spec.get("x_title", spec.get("x") or "")
-    ov = [{"name": f"이동평균 {w}", "values": v, "color": _h(svg.ma_color(i)), "ov": "ma", "w": w} for i, (w, v) in enumerate(F["ma"])]
+    FC = svg.fin_cols(spec)
+    ov = [{"name": f"이동평균 {w}", "values": v, "color": _h(svg.ma_color(i, spec)), "ov": "ma", "w": w} for i, (w, v) in enumerate(F["ma"])]
     if F["bb"]:
         bp, bk = op["bb"]["period"], op["bb"]["k"]
         mid, bu, bl = F["bb"]
-        ov += [{"name": f"볼린저 중심 ({bp})", "values": mid, "color": _h(svg.BB_COL), "ov": "bb_mid"},
-               {"name": f"볼린저 상단 (+{bk:g}σ)", "values": bu, "color": _h(svg.BB_COL), "ov": "bb_up", "dash": True},
-               {"name": f"볼린저 하단 (−{bk:g}σ)", "values": bl, "color": _h(svg.BB_COL), "ov": "bb_lo", "dash": True}]
+        ov += [{"name": f"볼린저 중심 ({bp})", "values": mid, "color": _h(FC["bb"]), "ov": "bb_mid"},
+               {"name": f"볼린저 상단 (+{bk:g}σ)", "values": bu, "color": _h(FC["bb"]), "ov": "bb_up", "dash": True},
+               {"name": f"볼린저 하단 (−{bk:g}σ)", "values": bl, "color": _h(FC["bb"]), "ov": "bb_lo", "dash": True}]
     cname = {"#eda100": "노랑", "#e87ba4": "분홍", "#4a3aa7": "남색", "#008300": "초록", "#eb6834": "주황", "#52514e": "진회색"}
     parts_ = []
     if F["ma"]:
-        parts_.append("이동평균 " + " · ".join(f"{w} {cname.get(svg.ma_color(i), '')}" for i, (w, _) in enumerate(F["ma"])))
+        parts_.append("이동평균 " + " · ".join(f"{w} {cname.get(svg.ma_color(i, spec), '')}".strip() for i, (w, _) in enumerate(F["ma"])))
     if F["bb"]:
-        parts_.append(f"볼린저 회색(가운데 {op['bb']['period']}일 평균, 점선 ±{op['bb']['k']:g}σ)")
+        parts_.append(f"볼린저 {'회색' if palettes.is_default(spec) else '선'}(가운데 {op['bb']['period']}일 평균, 점선 ±{op['bb']['k']:g}σ)")
     ctitle = ("OHLC 막대" if k == "ohlc" else "캔들") + (" — " + " · ".join(parts_) if parts_ else "")
     out = [dict(base, mode="chart", ctype="stock", fin="price", ohlc=k == "ohlc", cats=cats, series=F["px"], overlays=ov, unit=unit,
                 chart_title=ctitle, x_title=xt, up=up, down=dn, y_title=spec.get("y_title") or svg.unit_title("가격", unit), note=F["note"],
@@ -126,15 +136,15 @@ def fin_blocks(table, spec, base, title):
             out.append(dict(base, mode="chart", ctype="macd", fin="macd", cats=cats, unit="", x_title="", labels="none", up=up, down=dn,
                             series=[{"name": "히스토그램 (+)", "values": [v if v is not None and v >= 0 else None for v in hs], "color": _h(up)},
                                     {"name": "히스토그램 (−)", "values": [v if v is not None and v < 0 else None for v in hs], "color": _h(dn)},
-                                    {"name": "MACD", "values": ml, "color": _h(svg.MACD_COL)},
-                                    {"name": "시그널", "values": sg, "color": _h(svg.SIG_COL)}],
+                                    {"name": "MACD", "values": ml, "color": _h(FC["macd"])},
+                                    {"name": "시그널", "values": sg, "color": _h(FC["sig"])}],
                             rows_series=[{"name": "MACD", "values": ml}, {"name": "시그널", "values": sg}, {"name": "히스토그램", "values": hs}],
                             y_title="", title=f"MACD ({fa}, {sl}, {sn})", params=op["macd"], weight=0.42, h_cm=4.8,
                             chart_title=f"MACD ({fa}, {sl}, {sn}) — 보라 선 MACD · 주황 선 시그널 · 막대 히스토그램"))
         elif p == "rsi":
             rv = F["rsi"]
             out.append(dict(base, mode="chart", ctype="rsi", fin="rsi", cats=cats, unit="", x_title="", labels="none",
-                            series=[{"name": f"RSI ({op['rsi']})", "values": rv, "color": _h(svg.RSI_COL)},
+                            series=[{"name": f"RSI ({op['rsi']})", "values": rv, "color": _h(FC["rsi"])},
                                     {"name": "과열 70", "values": [70] * n, "color": "898781", "dash": True},
                                     {"name": "침체 30", "values": [30] * n, "color": "898781", "dash": True}],
                             rows_series=[{"name": f"RSI ({op['rsi']})", "values": rv}], y_title="", title=f"RSI ({op['rsi']}, 와일더)",
@@ -149,10 +159,10 @@ def fin_blocks(table, spec, base, title):
         va_on = op["vprofile"]["va"]
         kind_of = lambda i: "poc" if i == vp["poc"] else ("va" if va_on and d_ <= i <= u_ else "out")
         pick = lambda t: [v if kind_of(i) == t else None for i, (_, _, v) in enumerate(bins)]
-        sers = [{"name": "가치 영역 밖" if va_on else vol["name"], "values": pick("out"), "color": _h(svg.VP_COL)}]
+        sers = [{"name": "가치 영역 밖" if va_on else vol["name"], "values": pick("out"), "color": _h(FC["vp"])}]
         if va_on:
-            sers.append({"name": f"가치 영역 {int(vp['area'] * 100)}%", "values": pick("va"), "color": _h(svg.VP_VA)})
-        sers.append({"name": "POC (거래 최다)", "values": pick("poc"), "color": _h(svg.POC_COL)})
+            sers.append({"name": f"가치 영역 {int(vp['area'] * 100)}%", "values": pick("va"), "color": _h(FC["vp_va"])})
+        sers.append({"name": "POC (거래 최다)", "values": pick("poc"), "color": _h(FC["poc"])})
         out.append(dict(base, mode="chart", ctype="vprofile", fin="vprofile", cats=lab, series=sers, unit=vol["unit"], labels="none",
                         x_title=svg.unit_title("가격", unit), y_title=svg.unit_title(vol["name"], vol["unit"]), title=f"매물대 (가격대별 {vol['name']})",
                         chart_title="매물대", bins=bins, kinds=[kind_of(i) for i in range(len(bins))], vp=vp, side=True, h_cm=7.5))
@@ -186,7 +196,8 @@ def new_blocks(table, spec, base, title):
                     y_title=spec.get("y_title") or svg.unit_title("가격", unit), note=d["note"])]
         if vol:
             out[0]["panel"] = 1
-            vspec = dict(spec, colors={str(vol["idx"]): "#9ec5f4"})
+            vcol = "#9ec5f4" if palettes.is_default(spec) else ("#d0d0d0" if palettes.is_print(spec) else palettes.mix(palettes.colors(spec)[0], "#ffffff", 0.55))
+            vspec = dict(spec, colors={str(vol["idx"]): vcol})
             out.append(dict(base, spec=vspec, mode="chart", ctype="col", cats=d["cats"], series=[vol], unit=vol["unit"], x_title=xt,
                             y_title=svg.unit_title(vol["name"], vol["unit"]), title=f"{title} — {vol['name']}", panel=2, labels="none"))
         return out
@@ -1163,7 +1174,7 @@ def _xlsx_fin(sh, table, spec, blocks, r0, rowref, head_fill):
         ml = LineChart()
         ml.add_data(ref(cM["m"], cM["s"]), titles_from_data=True)
         ml.set_categories(catref)
-        for s_, c in zip(ml.series, (_h(svg.MACD_COL), _h(svg.SIG_COL))):
+        for s_, c in zip(ml.series, (_h(svg.fin_cols(spec)["macd"]), _h(svg.fin_cols(spec)["sig"]))):
             s_.graphicalProperties = _xl_sp(line=c, w=19050)
             s_.marker = Marker(symbol="none")
             s_.smooth = False
@@ -1179,7 +1190,7 @@ def _xlsx_fin(sh, table, spec, blocks, r0, rowref, head_fill):
         rc.add_data(ref(cR["r"], cR["lo"]), titles_from_data=True)
         rc.set_categories(catref)
         for j, s_ in enumerate(rc.series):
-            s_.graphicalProperties = _xl_sp(line=_h(svg.RSI_COL) if j == 0 else "898781", w=19050 if j == 0 else 12700)
+            s_.graphicalProperties = _xl_sp(line=_h(svg.fin_cols(spec)["rsi"]) if j == 0 else "898781", w=19050 if j == 0 else 12700)
             if j:
                 s_.graphicalProperties.line.prstDash = "dash"
             s_.marker = Marker(symbol="none")
@@ -1894,9 +1905,10 @@ def _set_ea_font(run_or_style_rpr, name=FONT):
         rf.set(qn(a), name)
 
 
-def heat_hex(v, lo, hi):
+def heat_hex(v, lo, hi, spec=None):
     f = (v - lo) / ((hi - lo) or 1)
-    return svg.SEQ[min(len(svg.SEQ) - 1, int(round(f * (len(svg.SEQ) - 1))))].lstrip("#").upper()
+    sq = palettes.seq(spec or {})
+    return sq[min(len(sq) - 1, int(round(f * (len(sq) - 1))))].lstrip("#").upper()
 
 
 # ── PPTX ─────────────────────────────────────────────────────────────────
@@ -2028,9 +2040,9 @@ def _pptx_heat_table(slide, b, x, y, w, h):
             if v is None:
                 put(tbl.cell(i + 1, j + 1), "", "FFFFFF")
             else:
-                f = heat_hex(v, lo, hi)
+                f = heat_hex(v, lo, hi, b.get("spec"))
                 put(tbl.cell(i + 1, j + 1), core.fmt(v, dec).replace("−", "-"), f, False,
-                    "FFFFFF" if svg.lum("#" + f) < 0.35 else "0B0B0B")
+                    svg.text_on("#" + f).lstrip("#").upper())
 
 
 def _note(spec, blocks, fmt=None):
@@ -2066,7 +2078,7 @@ def _note(spec, blocks, fmt=None):
         parts.append("깔때기: 투명한 '여백' 계열로 가운데를 맞춘 누적 가로 막대 (전환율은 데이터 표)")
     if k in ("candlestick", "ohlc"):
         up, dn = svg.candle_colors(spec)
-        cname = {svg.UP_COL: "빨강", svg.DOWN_COL: "파랑", svg.UP_INTL: "초록"}
+        cname = {svg.UP_COL: "빨강", svg.DOWN_COL: "파랑", svg.UP_INTL: "초록", svg.UP_PRINT: "옅은 회색", svg.DOWN_PRINT: "진한 회색"}
         un, dn_ = cname.get(up, "첫 색"), ("빨강" if dn == svg.DOWN_INTL else cname.get(dn, "둘째 색"))
         if k == "candlestick":
             parts.append(f"캔들: 몸통 {un}=상승(종가 ≥ 시가), {dn_}=하락, 심지=고가~저가" + (" — 주식형 차트(시가·고가·저가·종가 순서)" if office else ""))
@@ -2107,6 +2119,9 @@ def _note(spec, blocks, fmt=None):
         parts.append(f"누적 막대와 꺾은선({spec.get('y2', '')})이 같은 값 축을 씀")
     if k in IMAGE_KINDS and office:
         parts.append(f"{core.jo(core.KINDS[k].split(' (')[0], '은', '는')} 오피스 차트에 같은 형식이 없어 그림으로 넣음 — 값은 데이터 표에서 고쳐 그림을 다시 만드세요")
+    if palettes.is_print(spec):
+        parts.append("흑백 인쇄 색: 막대·조각은 회색 무늬, 선은 선 모양으로 구분" if office else
+                     "흑백 인쇄 색: 한글 차트는 무늬를 넣지 못해 회색 단계로만 구분(선은 진한 회색) — 그림으로 넣은 그래프는 무늬 포함")
     for b in blocks:
         if b.get("note"):
             parts.append(b["note"])
@@ -2327,14 +2342,14 @@ def _docx_heat_table(doc, b):
             c = t.cell(i + 1, j + 1)
             if v is None:
                 continue
-            f = heat_hex(v, lo, hi)
+            f = heat_hex(v, lo, hi, b.get("spec"))
             c.text = core.fmt(v, dec).replace("−", "-")
             _shade(c, f)
             for p in c.paragraphs:
                 p.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 for r in p.runs:
                     r.font.size = Pt(9.5)
-                    if svg.lum("#" + f) < 0.35:
+                    if svg.text_on("#" + f) == "#ffffff":
                         r.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
     doc.add_paragraph()
 
@@ -2440,8 +2455,9 @@ def build_xlsx(table, specs, path, doc_title="", include_table=True):
             row0 = max(row0 + used["nrows"] + 2, row0 + 1)
             if b["mode"] == "heat":
                 rng = used["range"]
-                sh.conditional_formatting.add(rng, ColorScaleRule(start_type="min", start_color="CDE2FB", mid_type="percentile",
-                                                                  mid_value=50, mid_color="3987E5", end_type="max", end_color="0D366B"))
+                sq = [c.lstrip("#").upper() for c in palettes.seq(spec)]
+                sh.conditional_formatting.add(rng, ColorScaleRule(start_type="min", start_color=sq[0], mid_type="percentile",
+                                                                  mid_value=50, mid_color=sq[6], end_type="max", end_color=sq[-1]))
         sh.column_dimensions["A"].width = 16
         for j in range(2, 12):
             sh.column_dimensions[L(j)].width = 12
@@ -2946,7 +2962,7 @@ def build_hwpx(table, specs, path, doc_title="", include_table=True, workdir=Non
                     s0 = b["series"][0]  # kordoc 산점도는 x 하나를 공유 → 계열이 여럿이면 첫 계열만 차트, 나머지는 표
                     md.append("cat: " + ", ".join(repr(round(x, 6)).rstrip("0").rstrip(".") if isinstance(x, float) else str(x) for x, _ in s0["points"]))
                     md.append(f"{_fence_txt(s0['name'] if len(b['series']) > 1 else spec['ys'][0])}: " + ", ".join(_numtxt(y) for _, y in s0["points"]))
-                    md.append(f"colors: #{hexcol(spec, s0.get('idx', 0))}")
+                    md.append(f"colors: #{hwpcol(spec, s0.get('idx', 0), ct)}")
                 else:
                     sers = b["series"]
                     vals_by = [s["values"] for s in sers]
@@ -2959,7 +2975,7 @@ def build_hwpx(table, specs, path, doc_title="", include_table=True, workdir=Non
                     if ct in ("pie", "doughnut"):
                         md.append("colors: " + ", ".join("#" + hexcol(spec, i) for i in range(len(b["cats"]))))
                     else:
-                        md.append("colors: " + ", ".join("#" + hexcol(spec, s.get("idx", i)) for i, s in enumerate(sers)))
+                        md.append("colors: " + ", ".join("#" + hwpcol(spec, s.get("idx", i), ct) for i, s in enumerate(sers)))
                 md += ["size: 160x95" if not b.get("panel") else "size: 160x70", "```", ""]
                 modes.append("hwp-native")
             else:
@@ -3015,6 +3031,20 @@ def _numtxt(v):
     return repr(round(float(v), 6))
 
 
+def _palette_finish(fn, office=True):
+    """빌더 감싸기: 명세의 palette 칸 정리(모르는 id 버림) + 흑백 인쇄면 오피스 차트 파트에 무늬·선 모양(palettes.print_office_file)"""
+    def wrapped(table, specs, path, *a, **kw):
+        specs = [palettes.normalize_spec(dict(s)) for s in specs]
+        report = fn(table, specs, path, *a, **kw)
+        if office and any(palettes.is_print(s) for s in specs):
+            palettes.print_office_file(path)
+        return report
+    wrapped.__name__, wrapped.__doc__ = fn.__name__, fn.__doc__
+    return wrapped
+
+
+build_xlsx, build_pptx, build_docx = _palette_finish(build_xlsx), _palette_finish(build_pptx), _palette_finish(build_docx)
+build_hwpx = _palette_finish(build_hwpx, office=False)
 BUILDERS = {"xlsx": build_xlsx, "pptx": build_pptx, "docx": build_docx, "hwpx": build_hwpx}
 
 
