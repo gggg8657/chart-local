@@ -26,6 +26,40 @@ def check(cond, msg):
 
 try:
     check(app.WS == TMP, "WORKSPACE 가 임시 폴더가 아님")
+    # tidy: 가짜 LLM, 숫자 검증·시간 예외·날짜 전파·청크 정렬·실패 원자성
+    import tidy
+    forecast = '3 PM\n\n맑음\n23 °\n12 %\n4\n9 km/h\n24일 (토)\n12 AM\n흐림\n18 °'
+    answer = {'columns':['날짜','시간','날씨','기온(°)','강수(%)','값','풍속(km/h)'],
+              'rows':[['','15:00','맑음','23','12','4','9'],['24일 (토)','00:00','흐림','18','','','']], 'note':'시간별 표'}
+    result = tidy.run(forecast, lambda *a, **kw: json.dumps(answer))
+    check(result['ok'] and len(result['table']['rows']) == 2 and result['table']['columns'][3]['name'] == '기온', 'tidy 예보 표')
+    check(result['dropped'] == 0 and result['table']['columns'][1]['type'] == 'cat', 'tidy 시간 정규화')
+    answer['rows'][0][3] = '9999'
+    answer['rows'][0][1] = '22:00'
+    result = tidy.run(forecast, lambda *a, **kw: json.dumps(answer))
+    check(result['dropped'] == 2 and result['table']['rows'][0][3] == '', 'tidy 지어낸 숫자·시간 제거')
+    check(core.is_messy(app.do_parse({'text':forecast})['table']), 'tidy messy 단일열')
+    check(not core.is_messy(app.do_parse({'text':'항목\t값\n가\t23\n나\t18'})['table']), 'tidy 정상 표')
+    check(core.is_messy({'columns':[{'type':'num'}]*4,'rows':[['1','','','']]*3}), 'tidy 빈 행')
+    check(core.is_messy({'columns':[{'type':'num'}]*3,'rows':[['1','2','3']]}, [['1'],['2'],['3','4','5']]), 'tidy 불균일 폭')
+    parts = list(tidy.chunks('24일 (토)\n' + ('3 PM\n맑음\n23 °\n' * 800)))
+    check(len(parts) > 1 and all(part.startswith('24일 (토)') for part in parts), 'tidy 청크 날짜 이월')
+    check(all(not part.rstrip().endswith('3 PM') for part in parts), 'tidy 레코드 경계')
+    check(not tidy.run('text', lambda *a, **k: 'broken')['ok'], 'tidy 실패 안내')
+    check(tidy.numbers('24일 100% -3 °') == {24,100,-3}, 'tidy 원문 숫자 토큰')
+    answer['rows'][0][1] = '15:00'
+    answer['rows'][0][3] = '1'
+    check(tidy.run('3 PM\n100 °', lambda *a, **k: json.dumps(answer))['table']['rows'][0][3] == '', 'tidy 100과 1 구별')
+    calls = []
+    def chunk_llm(system, user, *a, **kw):
+        data = json.loads(user)
+        names = data['columns'] or ['날짜','시간','기온(°)']
+        calls.append(data)
+        ordered = list(reversed(names))
+        values = {'날짜':'24일 (토)','시간':'15:00','기온(°)':'23'}
+        return json.dumps({'columns':ordered, 'rows':[[values[n] for n in ordered]], 'note':''})
+    combined = tidy.run('24일 (토)\n' + ('3 PM\n맑음\n23 °\n' * 800), chunk_llm)
+    check(combined['ok'] and len(combined['table']['rows']) == len(calls) and all(r == ['23','15:00','24일 (토)'] for r in combined['table']['rows']), 'tidy 여러 청크 열 순서 정렬·병합')
     # 1) 숫자·단위
     for s, v, u in [("1,234", 1234, ""), ("12.5%", 12.5, "%"), ("(300)", -300, ""), ("△15", -15, ""), ("−3.2", -3.2, ""),
                     ("₩1,000", 1000, ""), ("3.5억원", 3.5, "억원"), ("12 kg", 12, "kg"), ("1.2e3", 1200, "")]:

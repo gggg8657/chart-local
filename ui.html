@@ -153,10 +153,13 @@
     <textarea id="paste" placeholder="연도	예산(억원)	인원(명)&#10;2022	1,850	120&#10;2023	2,010	128&#10;…"></textarea>
     <div class="bar">
       <button class="primary" id="b-parse">표 읽기</button>
+      <button id="b-tidy">AI로 표 정리</button>
       <label class="hint" style="display:inline-flex;gap:6px;align-items:center"><input type="file" id="file" accept=".csv,.tsv,.txt,.xlsx,.xlsm" style="font-size:12.5px;max-width:250px"></label>
       <select id="sheet" class="hidden"></select>
       <span class="hint">샘플:</span><span id="samples" class="bar" style="margin:0"></span>
     </div>
+    <div id="tidy-hint" role="status"></div>
+    <div id="tidy-preview"></div>
     <div id="parsed" class="hidden">
       <div class="notes" id="notes"></div>
       <div class="bar"><span class="hint" id="shape"></span>
@@ -255,6 +258,7 @@ $('#sheet').onchange = () => parse(null, $('#sheet').value);
 $('#b-parse').onclick = () => { FILE = null; S.hid = null; S.source = S.source.startsWith('샘플') ? S.source : '붙여넣기'; parse(); };
 $('#b-transpose').onclick = () => parse(true);
 async function parse(transpose = null, sheet = null) {
+  tidyVersion++; $('#tidy-preview').innerHTML = '';
   try {
     const body = FILE ? {...FILE, sheet} : {text: $('#paste').value};
     if (transpose !== null) body.transpose = !!transpose;
@@ -274,6 +278,7 @@ function tableToTsv(t) {
   return [t.columns.map(c => c.name + (c.unit ? `(${c.unit})` : '')).join('\t'), ...t.rows.map(r => r.join('\t'))].join('\n');
 }
 function setTable(j) {
+  $('#tidy-hint').textContent = j.messy ? '표가 잘 안 만들어졌어요. AI로 정리해 볼까요?' : '';
   S.table = j.table;
   $('#parsed').classList.remove('hidden');
   $('#notes').innerHTML = (j.notes || []).map(n => `<span>${esc(n)}</span>`).join('');
@@ -281,6 +286,25 @@ function setTable(j) {
   drawTable();
   suggest();
 }
+let tidyVersion = 0;
+$('#paste').addEventListener('input', () => { tidyVersion++; $('#tidy-preview').innerHTML = ''; });
+$('#b-tidy').onclick = async () => {
+  const version = ++tidyVersion;
+  const button = $('#b-tidy'); button.disabled = true; button.textContent = '표 정리 중…';
+  $('#tidy-preview').innerHTML = '';
+  try {
+    const j = await api('api/tidy', {text: $('#paste').value});
+    if (version !== tidyVersion) return;
+    if (!j.ok) { $('#tidy-hint').textContent = j.note || '정리하지 못했습니다'; return; }
+    $('#tidy-preview').innerHTML = `<p>${esc(j.note)}</p><p>${j.table.rows.length}행 · ${j.table.columns.length}열 ${j.dropped ? '원문에 없는 값 ' + j.dropped + '개는 비웠습니다' : ''}</p>
+      <div style="max-height:320px;max-width:100%;overflow:auto"><table><thead><tr>${j.table.columns.map(c => `<th>${esc(c.name)}${c.unit ? '(' + esc(c.unit) + ')' : ''}</th>`).join('')}</tr></thead>
+      <tbody>${j.table.rows.map(r => `<tr>${r.map(v => `<td>${esc(v)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
+      <div class="bar"><button id="tidy-use" class="primary">이 표 쓰기</button><button id="tidy-cancel">원래대로</button></div>`;
+    $('#tidy-use').onclick = () => { FILE = null; S.hid = null; S.source = 'AI로 표 정리'; setTable({table:j.table,notes:[j.note]}); $('#tidy-preview').innerHTML = ''; };
+    $('#tidy-cancel').onclick = () => { $('#tidy-preview').innerHTML = ''; };
+  } catch (_) { $('#tidy-hint').textContent = '정리하지 못했습니다. 잠시 뒤 다시 시도해 주세요.'; }
+  finally { button.disabled = false; button.textContent = 'AI로 표 정리'; }
+};
 $('#ttitle').oninput = e => { if (S.table) S.table.title = e.target.value; };
 function drawTable() {
   const t = S.table;

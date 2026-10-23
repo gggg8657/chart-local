@@ -1221,3 +1221,16 @@ def summarize(table, max_cols=12):
             lv = _levels(vals)
             out.append(f"- {c['name']} ({'날짜·기간' if c['type'] == 'date' else '범주'}, {len(lv)}종): {', '.join(lv[:8])}{' …' if len(lv) > 8 else ''}")
     return f"행 {len(table['rows'])}개" + (f", 표 제목 '{table['title']}'" if table.get("title") else "") + "\n" + "\n".join(out)
+
+
+def is_messy(table, raw_rows=None):
+    cols, rows = table['columns'], table['rows']
+    if len(cols) <= 1 or not rows or not any(c['type'] == 'num' for c in cols):
+        return True
+    if sum(sum(bool(str(v).strip()) for v in r) < len(cols) / 2 for r in rows) > len(rows) / 2:
+        return True
+    raw = [r for r in (raw_rows or []) if any(str(v).strip() for v in r)]
+    if raw:
+        widths = [len(r) for r in raw]
+        return max(widths) - min(widths) >= 2 and sum(w != max(widths) for w in widths) > len(widths) / 3
+    return False

@@ -42,6 +42,7 @@ import core  # noqa: E402
 import palettes  # noqa: E402
 import fin  # noqa: E402
 import export  # noqa: E402
+import tidy
 import rerank  # noqa: E402
 import samples  # noqa: E402
 import svg  # noqa: E402
@@ -359,7 +360,20 @@ def do_parse(req):
     names = {c["name"] for c in table["columns"]}
     src = {c["name"]: palettes.match_source(c["name"], src_colors) for c in table["columns"] if c["type"] == "num"} if src_colors else {}
     src = {k: v for k, v in src.items() if v and k in names}
-    return {"table": table, "notes": notes, "sheets": sheets, "sheet": sheet, **({"source_colors": src} if src else {})}
+    return {"messy": core.is_messy(table, rows), "table": table, "notes": notes, "sheets": sheets, "sheet": sheet, **({"source_colors": src} if src else {})}
+
+
+def do_tidy(req, uid="owner"):
+    text = req.get('text')
+    if not isinstance(text, str) or not text.strip():
+        return {'ok':False,'table':None,'note':'정리하지 못했습니다. 원문을 붙여 넣어 주세요.', 'dropped':0}
+    if len(text.encode('utf-8')) > MAX_UPLOAD * 1.4:
+        raise ValueError('요청이 너무 큽니다')
+    rerank.acquire(uid)
+    try:
+        return tidy.run(text, llm, req.get('model'))
+    finally:
+        rerank.release(uid)
 
 
 def do_suggest(req, ws=WS):
@@ -577,7 +591,7 @@ class H(BaseHTTPRequestHandler):
         except ValueError:
             return self._send({"error": "잘못된 요청"}, code=400)
         ws = user_ws(self)
-        routes = {"/api/parse": do_parse, "/api/suggest": lambda r: do_suggest(r, ws), "/api/render": do_render,
+        routes = {"/api/tidy": lambda r: do_tidy(r, (self.headers.get("X-Agent-User") or "owner").strip()[:64] or "owner"), "/api/parse": do_parse, "/api/suggest": lambda r: do_suggest(r, ws), "/api/render": do_render,
                   "/api/export": lambda r: do_export(r, ws),
                   "/api/describe": lambda r: describe(check_table(r.get("table")), r.get("candidates") or [], r.get("model")),
                   "/api/rerank": lambda r: do_rerank(r, ws, (self.headers.get("X-Agent-User") or "owner").strip()[:64] or "owner"),
